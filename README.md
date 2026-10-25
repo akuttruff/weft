@@ -13,8 +13,28 @@ Built on a Mac Studio with `qwen/qwen3.8-27b` as the planner and
 
 ## Status
 
-Early but usable. Plan, work and review run end to end; the full-screen UI and
-MCP servers are next.
+Usable. Type `weft` in a repository and give it a task; plan, work and review
+run end to end in the interface below. MCP servers are next.
+
+## In the terminal
+
+`weft` draws an input box at the bottom of your terminal and writes the
+transcript above it, into the terminal's own history, so it is still there when
+you leave. Here is a feature added to a small notes CLI, start to finish:
+
+![weft adding a command to a CLI](docs/weft.png)
+
+Each `⏺` line is a tool call with the first line of its result under it. The
+plan sits in a cyan gutter. Edits, new files and shell commands ask first, and
+one key answers:
+
+![weft asking before an edit](docs/approval.png)
+
+Keys: enter sends · ctrl-j (or `\` + enter) for a newline · ↑↓ history · esc
+stops the task · y / a / n answer approvals · ctrl-c twice leaves. `/` opens a
+menu: `/plan <task>` always plans first, `/go <task>` never does, `/think`
+toggles the worker's thinking, `/clear` starts a fresh conversation, `/cost`
+shows the tokens used, `/help`, `/quit`.
 
 ## How a task flows
 
@@ -31,16 +51,8 @@ MCP servers are next.
    `FIX`, the worker goes again, this time with its thinking on. One review
    round by default (`review_rounds` in the config).
 
-Here is a feature added to a small notes CLI. Each `⏺` line is a tool call
-with the first line of its result beneath; the dim lines are what each model
-turn cost.
-
-![weft adding a command to a CLI](docs/run.png)
-
-Run `weft` on its own in a repository for a session: tasks given one after
-another share the worker's conversation, so "now do the same for X" works.
-
-![a weft session refactoring a file](docs/session.png)
+Tasks given one after another in a session share the worker's conversation, so
+"now do the same for X" works.
 
 ## Two routes to one server
 
@@ -82,17 +94,13 @@ chmod 600 ~/.config/weft/config.toml
 ## Commands
 
 ```bash
-weft                       # a session in the current folder
-weft run "task"            # one task, then exit
+weft                       # the interface, in the current folder
+weft run "task"            # one task on a plain line printer, then exit (for scripts)
 weft -y …                  # approve every tool call without asking
 weft --think …             # let the worker think before each step
 weft probe                 # ask both models one question; shows each route working
 weft tool search '{"pattern":"fn main","glob":"*.rs"}'   # run one tool by hand
 ```
-
-In a session: `/plan <task>` always plans first, `/go <task>` never does,
-`/think` toggles the worker's thinking, `/clear` starts a fresh conversation,
-`/quit` leaves.
 
 Edits, new files and shell commands ask first: `[y] once  [a] always this
 session  [n] no`. Ctrl-C stops the current task and keeps the session. Every
@@ -123,7 +131,11 @@ appears. In order:
    worker loop, `tokio::select!` for cancellation, a forwarding task. Then
    `tandem.rs`: the same loop reused for the planner (read-only tools) and the
    reviewer (no tools), and the verdict parser.
-4. **`src/main.rs`** — clap subcommands, `spawn_blocking` for stdin, generics
+4. **`src/session.rs`** and **`src/ui/`** — the session shared through an
+   `Arc` with `Mutex`es held only briefly; the screen as a `tokio::select!`
+   loop over key events, agent events and a tick; ratatui's inline viewport
+   with `insert_before` for the transcript; approvals as a `oneshot` channel.
+5. **`src/main.rs`** — clap subcommands, `spawn_blocking` for stdin, generics
    over a closure that returns a future.
 
 ## Development

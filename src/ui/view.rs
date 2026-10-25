@@ -45,7 +45,10 @@ pub fn result_line(ok: bool, output: &str, tool: &str) -> Vec<Line<'static>> {
                 l.trim_start().starts_with(|c: char| c.is_ascii_digit()) && l.contains('\t')
             })
             .count();
-        format!("Read {numbered} lines")
+        format!(
+            "Read {numbered} line{}",
+            if numbered == 1 { "" } else { "s" }
+        )
     } else {
         let first: String = output
             .lines()
