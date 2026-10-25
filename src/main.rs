@@ -11,7 +11,8 @@ use serde_json::json;
 use weft::config::Config;
 use weft::lm::chat::ChatModel;
 use weft::lm::raw::RawModel;
-use weft::lm::{Endpoint, Message, Request, StreamEvent, ToolSpec};
+use weft::lm::{Endpoint, Message, Request, StreamEvent, ToolCall, ToolSpec};
+use weft::tools::{Ctx, Registry};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -34,6 +35,12 @@ enum Command {
         #[arg(long)]
         think: bool,
     },
+    /// Run one tool by hand, as the worker would: `weft tool search '{"pattern":"fn main"}'`.
+    Tool {
+        name: String,
+        /// The arguments as JSON (default: {})
+        args: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -47,7 +54,32 @@ async fn main() -> Result<()> {
 
     match args.command {
         Command::Probe { question, think } => probe(&config, question, think).await,
+        Command::Tool { name, args } => tool(name, args).await,
     }
+}
+
+async fn tool(name: String, args: Option<String>) -> Result<()> {
+    let arguments = match args {
+        Some(a) => serde_json::from_str(&a).context("the arguments are not JSON")?,
+        None => json!({}),
+    };
+    let ctx = Ctx {
+        root: std::env::current_dir()?,
+    };
+    let registry = Registry::builtin();
+    let call = ToolCall {
+        id: "call_1".into(),
+        name,
+        arguments,
+    };
+    if let Some(what) = registry.approval(&call) {
+        println!("\x1b[2m(would ask to {what})\x1b[0m");
+    }
+    match registry.run(&call, &ctx).await {
+        Ok(out) => print!("{out}"),
+        Err(e) => println!("error: {e}"),
+    }
+    Ok(())
 }
 
 async fn probe(config: &Config, question: Option<String>, think: bool) -> Result<()> {
