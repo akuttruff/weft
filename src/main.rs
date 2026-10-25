@@ -419,6 +419,9 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
                 }
                 at_line_start = true;
             }
+            AgentEvent::Trimmed { dropped, tokens } => println!(
+                "\x1b[2m  dropped {dropped} earlier tool results to make room (context {tokens} tokens)\x1b[0m"
+            ),
             AgentEvent::Compacted {
                 before,
                 after,

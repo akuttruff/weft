@@ -104,6 +104,11 @@ pub enum AgentEvent {
         usage: Usage,
         seconds: f32,
     },
+    /// Old tool results were dropped mid-task to stay inside the window.
+    Trimmed {
+        dropped: usize,
+        tokens: u32,
+    },
     /// The worker's earlier tasks were folded into a note; see `agent::compact`.
     Compacted {
         before: u32,

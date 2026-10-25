@@ -29,18 +29,30 @@ pub struct Compact {
     /// tokens. 0 never compacts on its own; `/compact` still works.
     #[serde(default = "default_compact_at")]
     pub at: u32,
+    /// The worker's context window, in tokens: what the model was loaded
+    /// with. Inside a task, old tool results are dropped as the window fills.
+    #[serde(default = "default_window")]
+    pub window: u32,
 }
 
 impl Default for Compact {
     fn default() -> Self {
         Self {
             at: default_compact_at(),
+            window: default_window(),
         }
     }
 }
 
 fn default_compact_at() -> u32 {
     48_000
+}
+
+/// LM Studio's usual load setting here.
+pub const DEFAULT_WINDOW: u32 = 65_536;
+
+fn default_window() -> u32 {
+    DEFAULT_WINDOW
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -155,6 +167,7 @@ model = "qwen3.5-122b-a10b"
         assert_eq!(config.scout.model, None);
         assert_eq!(config.scout.effort, None);
         assert_eq!(config.compact.at, 48_000);
+        assert_eq!(config.compact.window, 65_536);
         assert!(config.approve.commands.is_empty());
     }
 }

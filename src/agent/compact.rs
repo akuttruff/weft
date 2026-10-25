@@ -76,6 +76,7 @@ pub async fn compact(
         allowed: HashSet::new(),
         role: Role::Scout,
         max_rounds: 1,
+        window: crate::config::DEFAULT_WINDOW,
     };
     let mut convo = vec![
         Message::System(prompts::COMPACT.into()),

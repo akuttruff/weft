@@ -83,6 +83,7 @@ impl Tool for Scout {
             allowed: HashSet::new(),
             role: Role::Scout,
             max_rounds: SCOUT_ROUNDS,
+            window: crate::config::DEFAULT_WINDOW,
         };
         let mut convo = vec![
             Message::System(prompts::SCOUT.into()),
@@ -125,6 +126,9 @@ impl Tool for Scout {
                 "the scout looked {n} times without reaching an answer; ask something narrower or search yourself"
             ))),
             Err(WorkerError::Model(e)) => Err(ToolError::Failed(format!("the scout's model: {e}"))),
+            Err(e @ WorkerError::ContextFull(_)) => {
+                Err(ToolError::Failed(format!("the scout ran out of room: {e}")))
+            }
         }
     }
 }

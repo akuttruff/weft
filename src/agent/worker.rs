@@ -14,6 +14,13 @@ use crate::tools::{Ctx, Registry, ToolError};
 /// Tool rounds before the loop gives up on a task.
 pub const MAX_ROUNDS: usize = 60;
 const MAX_TOKENS: u32 = 8_000;
+/// Room left under the window for the answer and the next tool results.
+const MARGIN: u32 = 4_000;
+/// How many of the latest tool results stay when old ones are dropped.
+const KEEP_RESULTS: usize = 3;
+/// What an old tool result is replaced with.
+pub const DROPPED: &str =
+    "(dropped to make room in the context; call the tool again if you need it)";
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {
@@ -23,6 +30,10 @@ pub enum WorkerError {
     Cancelled,
     #[error("gave up after {0} tool rounds")]
     TooManyRounds(usize),
+    #[error(
+        "the conversation no longer fits the model's window ({0} tokens); /compact or /clear, then try again"
+    )]
+    ContextFull(u32),
 }
 
 /// What a finished run amounts to.
@@ -49,6 +60,8 @@ pub struct Worker<'a> {
     pub role: Role,
     /// Tool rounds before giving up; see `MAX_ROUNDS`.
     pub max_rounds: usize,
+    /// The model's context window in tokens; 0 switches the guard off.
+    pub window: u32,
 }
 
 impl Worker<'_> {
@@ -109,6 +122,26 @@ impl Worker<'_> {
                     call_id: call.id.clone(),
                     content: output,
                 });
+            }
+
+            // Near the window, old tool results go first: the model has read
+            // them, and it can read again what it still needs. With nothing
+            // left to drop, the task stops rather than failing on the server.
+            let ceiling = self.window.saturating_sub(MAX_TOKENS + MARGIN);
+            if self.window > 0 && reply.usage.prompt_tokens >= ceiling {
+                let mut dropped = drop_old_results(messages, KEEP_RESULTS);
+                if dropped == 0 {
+                    // Still too big with the last few kept: keep only the newest.
+                    dropped = drop_old_results(messages, 1);
+                }
+                if dropped == 0 {
+                    return Err(WorkerError::ContextFull(reply.usage.prompt_tokens));
+                }
+                self.emit(AgentEvent::Trimmed {
+                    dropped,
+                    tokens: reply.usage.prompt_tokens,
+                })
+                .await;
             }
         }
         Err(WorkerError::TooManyRounds(self.max_rounds))
@@ -176,6 +209,27 @@ impl Worker<'_> {
     async fn emit(&self, evt: AgentEvent) {
         let _ = self.events.send(evt).await;
     }
+}
+
+/// Replace every tool result but the last `keep` with a stub; how many went.
+/// Short results stay: they cost little and dropping them would only confuse.
+pub fn drop_old_results(messages: &mut [Message], keep: usize) -> usize {
+    let total = messages
+        .iter()
+        .filter(|m| matches!(m, Message::Tool { .. }))
+        .count();
+    let mut seen = 0;
+    let mut dropped = 0;
+    for m in messages.iter_mut() {
+        if let Message::Tool { content, .. } = m {
+            seen += 1;
+            if seen + keep <= total && content.len() > 200 && content != DROPPED {
+                *content = DROPPED.to_string();
+                dropped += 1;
+            }
+        }
+    }
+    dropped
 }
 
 fn add(a: Usage, b: Usage) -> Usage {
@@ -270,6 +324,7 @@ mod tests {
             allowed: HashSet::new(),
             role: Role::Worker,
             max_rounds: MAX_ROUNDS,
+            window: 0,
         };
         let mut messages = vec![
             Message::System("sys".into()),
@@ -310,6 +365,7 @@ mod tests {
                 AgentEvent::ToolDone { ok: true, .. } => "ok",
                 AgentEvent::ToolDone { ok: false, .. } => "fail",
                 AgentEvent::TurnEnd { .. } => "end",
+                AgentEvent::Trimmed { .. } => "trimmed",
                 AgentEvent::Compacted { .. } => "compacted",
                 AgentEvent::Reasoning { .. } => "think",
                 AgentEvent::Phase { .. } | AgentEvent::Plan { .. } | AgentEvent::Review { .. } => {
@@ -361,11 +417,77 @@ mod tests {
             allowed: HashSet::new(),
             role: Role::Worker,
             max_rounds: MAX_ROUNDS,
+            window: 0,
         };
         let mut messages = vec![Message::User("run it".into())];
         worker.run(&mut messages).await.unwrap();
         assert!(
             matches!(&messages[2], Message::Tool { content, .. } if content == "error: the user said no")
         );
+    }
+    #[tokio::test]
+    async fn near_the_window_old_results_are_dropped_then_the_task_stops() {
+        let dir = tempfile::tempdir().unwrap();
+        // A small file: its results are too short to be worth dropping.
+        std::fs::write(dir.path().join("a.txt"), "x".repeat(10)).unwrap();
+        let registry = Registry::builtin();
+        let ctx = Ctx::new(dir.path().to_path_buf());
+        let big = |n: u32| Reply {
+            tool_calls: vec![call("c", "read_file", json!({"path": "a.txt"}))],
+            usage: Usage {
+                prompt_tokens: n,
+                completion_tokens: 1,
+                reasoning_tokens: 0,
+            },
+            ..Default::default()
+        };
+        // Every turn claims to be near the window: 20k of a 30k window with a 12k margin.
+        let model = Scripted {
+            replies: Mutex::new(vec![big(20_000), big(20_000)]),
+            seen: Mutex::new(vec![]),
+        };
+        let (events, mut rx) = mpsc::channel(64);
+        let mut worker = Worker {
+            model: &model,
+            registry: &registry,
+            ctx: &ctx,
+            approver: &Yes,
+            events,
+            cancel: CancellationToken::new(),
+            allowed: HashSet::new(),
+            role: Role::Worker,
+            max_rounds: MAX_ROUNDS,
+            window: 30_000,
+        };
+        let mut messages = vec![
+            Message::System("sys".into()),
+            Message::User("t".into()),
+            Message::Tool {
+                call_id: "old".into(),
+                content: "y".repeat(500),
+            },
+        ];
+        let err = worker.run(&mut messages).await.unwrap_err();
+        assert!(matches!(err, WorkerError::ContextFull(20_000)), "{err}");
+        // The old result went after the first turn; after the second there
+        // was nothing left worth dropping, so the task stopped.
+        assert!(matches!(&messages[2], Message::Tool { content, .. } if content == DROPPED));
+        let stubs = messages
+            .iter()
+            .filter(|m| matches!(m, Message::Tool { content, .. } if content == DROPPED))
+            .count();
+        let kept = messages
+            .iter()
+            .filter(|m| matches!(m, Message::Tool { content, .. } if content != DROPPED))
+            .count();
+        assert_eq!((stubs, kept), (1, 2));
+        drop(worker);
+        let mut trimmed = 0;
+        while let Some(evt) = rx.recv().await {
+            if matches!(evt, AgentEvent::Trimmed { .. }) {
+                trimmed += 1;
+            }
+        }
+        assert_eq!(trimmed, 1);
     }
 }

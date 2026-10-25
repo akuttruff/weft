@@ -64,6 +64,8 @@ pub struct Tandem<'a> {
     /// Text put above this task when the conversation is not fresh: the
     /// note a resumed session starts with. Empty most of the time.
     pub lead: String,
+    /// The worker's context window, for the in-task guard.
+    pub window: u32,
 }
 
 impl Tandem<'_> {
@@ -193,6 +195,7 @@ impl Tandem<'_> {
                     allowed: HashSet::new(),
                     role: Role::Worker,
                     max_rounds: 1,
+                    window: self.window,
                 };
                 let mut convo = vec![
                     Message::System(prompts::TRIAGE.into()),
@@ -220,6 +223,7 @@ impl Tandem<'_> {
             allowed: std::mem::take(&mut self.allowed),
             role: Role::Worker,
             max_rounds: MAX_ROUNDS,
+            window: self.window,
         };
         let result = worker.run(messages).await;
         self.allowed = std::mem::take(&mut worker.allowed);
@@ -244,6 +248,7 @@ impl Tandem<'_> {
             allowed: HashSet::new(),
             role,
             max_rounds,
+            window: self.window,
         }
     }
 
@@ -630,6 +635,7 @@ mod tests {
             when: PlanWhen::Auto,
             review_rounds: 2,
             lead: String::new(),
+            window: crate::config::DEFAULT_WINDOW,
         };
         let mut messages = vec![Message::System("sys".into())];
         let out = tandem
@@ -719,6 +725,7 @@ mod tests {
             when: PlanWhen::Always,
             review_rounds: 1,
             lead: String::new(),
+            window: crate::config::DEFAULT_WINDOW,
         };
         let mut messages = vec![];
         let out = tandem
@@ -754,6 +761,7 @@ mod tests {
             when: PlanWhen::Always,
             review_rounds: 1,
             lead: String::new(),
+            window: crate::config::DEFAULT_WINDOW,
         };
         let mut messages = vec![
             Message::System("sys".into()),

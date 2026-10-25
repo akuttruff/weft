@@ -37,6 +37,8 @@ pub struct Session {
     digest: Box<dyn Model>,
     /// Compact once the worker's context reaches this; 0 never.
     pub compact_at: u32,
+    /// The worker's context window, in tokens.
+    pub window: u32,
     pub ctx: Ctx,
     pub when: PlanWhen,
     pub review_rounds: u8,
@@ -99,6 +101,7 @@ impl Session {
             planner_registry,
             digest: helper(),
             compact_at: config.compact.at,
+            window: config.compact.window,
             scout_model,
             ctx: Ctx::new(root),
             when: config.planner.when,
@@ -269,6 +272,7 @@ impl Session {
             when: self.when,
             review_rounds: self.review_rounds,
             lead: lead.clone().unwrap_or_default(),
+            window: self.window,
         };
         let result = tandem.run(task, mode, &mut messages).await;
         *self.allowed.lock().unwrap() = std::mem::take(&mut tandem.allowed);

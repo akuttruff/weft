@@ -43,7 +43,6 @@ const TAIL_ROWS: u16 = 1;
 const BOX_ROWS: u16 = 5; // border + 3 lines + border
 const TICK: Duration = Duration::from_millis(120);
 const SPINNER: [&str; 6] = ["✻", "✢", "✳", "✶", "✻", "✽"];
-const CONTEXT_WINDOW: u32 = 65_536;
 
 const COMMANDS: &[(&str, &str, bool)] = &[
     ("/plan", "plan first, then work", true),
@@ -406,6 +405,14 @@ impl App {
                 vec![Span::styled("  │ ", Style::new().fg(Color::Cyan))],
             ),
             AgentEvent::Review { approved, text } => self.push(view::review_lines(approved, &text)),
+            AgentEvent::Trimmed { dropped, tokens } => {
+                self.flush_text();
+                self.push(view::note_line(&format!(
+                    "  dropped {dropped} earlier tool result{} to make room · context {}",
+                    if dropped == 1 { "" } else { "s" },
+                    view::k(tokens),
+                )));
+            }
             AgentEvent::Compacted {
                 before,
                 after,
@@ -704,7 +711,7 @@ impl App {
                 view::k(view::total(self.worker_usage)),
                 view::k(view::total(self.scout_usage)),
                 view::k(self.context),
-                view::k(CONTEXT_WINDOW),
+                view::k(self.session.window),
             ))),
             "/mcp" => {
                 if self.session.mcp.is_empty() {
@@ -978,7 +985,7 @@ impl App {
     }
 
     fn footer_line(&self) -> Line<'static> {
-        let pct = (self.context as f32 / CONTEXT_WINDOW as f32 * 100.0).round() as u32;
+        let pct = (self.context as f32 / self.session.window.max(1) as f32 * 100.0).round() as u32;
         // Name the model that has the floor: the planner while it plans or
         // reviews, the worker otherwise.
         let (model, doing) = match &self.running {
