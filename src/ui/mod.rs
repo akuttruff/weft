@@ -29,6 +29,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use unicode_width::UnicodeWidthStr;
 
+use crate::agent::compact::Compacted;
 use crate::agent::tandem::{Mode, TandemOutcome};
 use crate::agent::worker::WorkerError;
 use crate::agent::{AgentEvent, Approver, Decision, Role, Yes};
@@ -49,6 +50,7 @@ const COMMANDS: &[(&str, &str, bool)] = &[
     ("/go", "straight to work, no plan", true),
     ("/think", "toggle the worker's thinking", false),
     ("/clear", "start a fresh conversation", false),
+    ("/compact", "fold earlier tasks into a note", false),
     ("/resume", "pick up an earlier session", true),
     ("/cost", "tokens used this session", false),
     ("/mcp", "MCP servers and their tools", false),
@@ -64,6 +66,7 @@ enum UiMsg {
         reply: oneshot::Sender<Decision>,
     },
     Done(Result<TandemOutcome, WorkerError>),
+    Compacted(Result<Compacted, WorkerError>),
 }
 
 /// Approvals asked on screen and answered with a key.
@@ -308,6 +311,14 @@ impl App {
         match msg {
             UiMsg::Ask { what, reply } => self.ask = Some((what, reply)),
             UiMsg::Done(result) => self.on_done(result),
+            UiMsg::Compacted(result) => {
+                self.running = None;
+                match result {
+                    Ok(done) => self.on_agent(done.event()),
+                    Err(WorkerError::Cancelled) => self.push(view::error_line("  ⎿ Interrupted")),
+                    Err(e) => self.push(view::error_line(&format!("  ⎿ could not compact: {e:#}"))),
+                }
+            }
             UiMsg::Agent(evt) => self.on_agent(evt),
         }
     }
@@ -321,6 +332,7 @@ impl App {
                     "working" => "working",
                     "reviewing" => "reviewing",
                     "fixing" => "fixing",
+                    "compacting" => "compacting",
                     _ => "working",
                 };
                 if let Some(r) = &mut self.running {
@@ -394,6 +406,19 @@ impl App {
                 vec![Span::styled("  │ ", Style::new().fg(Color::Cyan))],
             ),
             AgentEvent::Review { approved, text } => self.push(view::review_lines(approved, &text)),
+            AgentEvent::Compacted {
+                before,
+                after,
+                tasks,
+            } => {
+                self.context = after;
+                self.push(view::note_line(&format!(
+                    "  compacted: {tasks} earlier task{} folded into a note · context {} → ~{} tokens",
+                    if tasks == 1 { "" } else { "s" },
+                    view::k(before),
+                    view::k(after),
+                )));
+            }
             AgentEvent::TurnEnd { role, usage, .. } => {
                 match role {
                     Role::Planner => self.planner_usage = add(self.planner_usage, usage),
@@ -644,6 +669,7 @@ impl App {
                 self.session.clear();
                 self.push(view::note_line("fresh conversation"));
             }
+            "/compact" => self.compact(tx),
             "/resume" if rest.is_empty() => {
                 let me = self.session.transcript_id();
                 match self.sessions_dir().and_then(|d| transcript::list(&d)) {
@@ -713,6 +739,46 @@ impl App {
             ))),
             _ => self.start(line, Mode::Auto, tx),
         }
+    }
+
+    /// Fold the conversation now, on its own tokio task like a task.
+    fn compact(&mut self, tx: &mpsc::Sender<UiMsg>) {
+        if self.running.is_some() {
+            self.push(view::note_line("a task is running; esc stops it"));
+            return;
+        }
+        if self.session.depth() == 0 {
+            self.push(view::note_line("nothing to compact yet"));
+            return;
+        }
+        let cancel = CancellationToken::new();
+        self.running = Some(Running {
+            began: Instant::now(),
+            phase: "compacting",
+            turn: None,
+            text: String::new(),
+            answer_open: false,
+            cancel: cancel.clone(),
+        });
+        let session = self.session.clone();
+        let before = self.context;
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let (events, mut agent_rx) = mpsc::channel::<AgentEvent>(64);
+            let forward = {
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    while let Some(evt) = agent_rx.recv().await {
+                        if tx.send(UiMsg::Agent(evt)).await.is_err() {
+                            break;
+                        }
+                    }
+                })
+            };
+            let result = session.compact(events, cancel, before).await;
+            let _ = forward.await;
+            let _ = tx.send(UiMsg::Compacted(result)).await;
+        });
     }
 
     fn sessions_dir(&self) -> Result<std::path::PathBuf> {
@@ -884,6 +950,7 @@ impl App {
                 "working" => "Working",
                 "reviewing" => "Reviewing",
                 "fixing" => "Fixing",
+                "compacting" => "Compacting",
                 _ => "Thinking about it",
             };
             let mut s = format!("{verb}… {}", view::clock(r.began.elapsed().as_secs()));
@@ -922,8 +989,16 @@ impl App {
             }) => (self.session.planner_name(), *phase),
             Some(Running {
                 turn: Some((Role::Scout, _)),
+                phase,
                 ..
-            }) => (self.session.scout_name(), "scouting"),
+            }) => (
+                self.session.scout_name(),
+                if *phase == "compacting" {
+                    "compacting"
+                } else {
+                    "scouting"
+                },
+            ),
             Some(r) => (self.session.worker_name(), r.phase),
             None => (self.session.worker_name(), "idle"),
         };

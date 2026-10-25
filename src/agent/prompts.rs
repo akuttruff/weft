@@ -60,6 +60,16 @@ You are weft's scout. Another model is working on this project and has asked you
 
 Answer in under 150 words: the places that matter as `path:line`, one sentence on what each does, and how they connect if the question needs it. Cite only files you have opened or that a search returned; never guess a path. Never paste code longer than three lines; the asker will read the exact spot itself. If you cannot find it, say what you searched for and where, so the asker does not repeat it.";
 
+/// The handover note that replaces the earlier part of a long conversation.
+pub const COMPACT: &str = "\
+You are writing a handover note for a coding agent, the worker, whose conversation has grown too long. Below is the earlier part of that conversation: the user's tasks, the worker's tool calls (results cut short) and its answers. Write the note the worker needs to go on as if it remembered everything, in under 400 words:
+- Tasks done, one line each, with the outcome.
+- Files created or changed, and how.
+- Decisions made, and conventions of the project the worker learned.
+- Anything left unfinished, or asked for but not done.
+- Facts worth keeping: commands that worked, paths, names.
+Plain bullets, no preamble, no code longer than a line.";
+
 /// A one-word call on whether a task needs a plan first.
 pub const TRIAGE: &str = "\
 Decide whether the request below needs a plan before work starts. Answer with exactly one word: PLAN if it changes code in more than one place, touches more than one file, or the approach is not obvious; GO if it is a question, a lookup, or a small change in one spot.";

@@ -14,6 +14,29 @@ pub struct Config {
     pub worker: Worker,
     #[serde(default)]
     pub scout: Scout,
+    #[serde(default)]
+    pub compact: Compact,
+}
+
+/// When the worker's conversation is folded into a handover note.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Compact {
+    /// Compact after a task once the worker's context reaches this many
+    /// tokens. 0 never compacts on its own; `/compact` still works.
+    #[serde(default = "default_compact_at")]
+    pub at: u32,
+}
+
+impl Default for Compact {
+    fn default() -> Self {
+        Self {
+            at: default_compact_at(),
+        }
+    }
+}
+
+fn default_compact_at() -> u32 {
+    48_000
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -127,5 +150,6 @@ model = "qwen3.5-122b-a10b"
         assert!(!config.worker.thinking);
         assert_eq!(config.scout.model, None);
         assert_eq!(config.scout.effort, None);
+        assert_eq!(config.compact.at, 48_000);
     }
 }

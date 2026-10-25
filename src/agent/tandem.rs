@@ -321,7 +321,7 @@ pub fn exchanges(messages: &[Message]) -> Vec<(String, String)> {
 /// The task in one of the worker's user messages, or `None` for a message
 /// that is not a task: a fix request (part of the task before it) or a note
 /// such as the project snapshot or a summary, which open with `## `.
-fn task_of(s: &str) -> Option<String> {
+pub(crate) fn task_of(s: &str) -> Option<String> {
     if s.starts_with(prompts::WORKER_FIX) {
         return None;
     }

@@ -419,6 +419,13 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
                 }
                 at_line_start = true;
             }
+            AgentEvent::Compacted {
+                before,
+                after,
+                tasks,
+            } => println!(
+                "\x1b[2m  compacted: {tasks} earlier tasks folded into a note · context {before} → ~{after} tokens\x1b[0m"
+            ),
             AgentEvent::TurnEnd {
                 role,
                 usage,

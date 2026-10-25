@@ -310,6 +310,7 @@ mod tests {
                 AgentEvent::ToolDone { ok: true, .. } => "ok",
                 AgentEvent::ToolDone { ok: false, .. } => "fail",
                 AgentEvent::TurnEnd { .. } => "end",
+                AgentEvent::Compacted { .. } => "compacted",
                 AgentEvent::Reasoning { .. } => "think",
                 AgentEvent::Phase { .. } | AgentEvent::Plan { .. } | AgentEvent::Review { .. } => {
                     "other"

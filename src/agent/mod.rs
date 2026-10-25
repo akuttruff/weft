@@ -1,6 +1,7 @@
 //! The agent: a worker that runs the tool loop, and the events it reports to
 //! whatever is drawing the screen.
 
+pub mod compact;
 pub mod prompts;
 pub mod scout;
 pub mod tandem;
@@ -102,6 +103,12 @@ pub enum AgentEvent {
         role: Role,
         usage: Usage,
         seconds: f32,
+    },
+    /// The worker's earlier tasks were folded into a note; see `agent::compact`.
+    Compacted {
+        before: u32,
+        after: u32,
+        tasks: usize,
     },
 }
 

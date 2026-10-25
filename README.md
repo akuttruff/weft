@@ -14,8 +14,9 @@ Built on a Mac Studio with `qwen/qwen3.8-27b` as the planner and
 ## Status
 
 Usable. Type `weft` in a repository and give it a task; plan, work and review
-run end to end in the interface below. MCP servers plug in. A transcript log
-is next.
+run end to end in the interface below. MCP servers plug in. Every session is
+written down, can be resumed, and folds its history into a note before the
+context window fills.
 
 ## In the terminal
 
@@ -40,9 +41,10 @@ shell commands ask first, and one key answers:
 Keys: enter sends · ctrl-j (or `\` + enter) for a newline · ↑↓ history · esc
 stops the task · y / a / n answer approvals · ctrl-c twice leaves. `/` opens a
 menu: `/plan <task>` always plans first, `/go <task>` never does, `/think`
-toggles the worker's thinking, `/clear` starts a fresh conversation, `/cost`
-shows the tokens used, `/mcp` lists the MCP servers and their tools, `/help`,
-`/quit`.
+toggles the worker's thinking, `/clear` starts a fresh conversation,
+`/resume` lists this folder's earlier sessions and `/resume 2` picks one up,
+`/compact` folds the earlier tasks into a note now, `/cost` shows the tokens
+used, `/mcp` lists the MCP servers and their tools, `/help`, `/quit`.
 
 ## How a task flows
 
@@ -114,6 +116,9 @@ thinking = false            # the planner carries the reasoning; fix rounds thin
 [scout]                     # optional: the model that answers "where is X?"
 # model = "qwen/qwen3.5-9b"   # default: the worker's; raw route, thinking off
 # effort = "low"              # only for a model that honours reasoning_effort
+
+[compact]
+at = 48000                  # fold the conversation once the worker's context reaches this; 0 never
 EOF
 chmod 600 ~/.config/weft/config.toml
 ```
@@ -143,11 +148,39 @@ fails is reported and skipped; `/mcp` in the interface and `weft mcp` on the
 command line show what came up. The planner and reviewer keep to the
 read-only built-ins.
 
+## Sessions
+
+Everything a session does is written to
+`~/.local/share/weft/sessions/<folder>/<id>.jsonl` as it happens: each task,
+every message of the worker's conversation, each tool call and result, each
+model turn's tokens and seconds, the plan and the review. It lives outside the
+project, so nothing shows up in `git status` and the worker never stumbles on
+its own history. `weft sessions` lists a folder's sessions.
+
+**Resuming.** `weft resume` reopens the folder's last session and `weft resume
+<id>` an earlier one; inside weft, `/resume` lists them and `/resume 2` picks
+one. The screen replays each task with the first line of its answer, the
+worker gets its conversation back, and the file is appended to from there. The
+worker is also told the project may have changed, with a fresh folder snapshot,
+so it reads a file again before editing it. Approvals given with `a` do not
+carry over.
+
+**Compaction.** After a task, once the worker's last prompt has reached the
+`[compact] at` threshold, the earlier tasks are folded into a handover note:
+what was done, which files changed and how, decisions, loose ends, facts worth
+keeping. The scout's model writes it (the 9B takes a few seconds), the last
+task stays verbatim, and the worker carries on from the note. `/compact` does
+it on demand. The note is a `## Earlier in this session` message in the
+conversation, so a resumed session carries it too.
+
 ## Commands
 
 ```bash
 weft                       # the interface, in the current folder
+weft resume [id]           # the interface, continuing the last (or the given) session
 weft run "task"            # one task on a plain line printer, then exit (for scripts)
+weft run --session last "task"   # the same, continuing a session (an id or `last`)
+weft sessions              # this folder's sessions
 weft -y …                  # approve every tool call without asking
 weft --think …             # let the worker think before each step
 weft probe                 # ask both models one question; shows each route working
@@ -187,15 +220,20 @@ appears. In order:
    `tandem.rs`: the same loop reused for the planner (read-only tools) and the
    reviewer (no tools), and the verdict parser. `scout.rs`: the loop once more,
    wrapped up as a `Tool` the other models can call, with a forwarding task
-   that filters its events.
+   that filters its events. `compact.rs`: slicing a conversation and rewriting
+   it around a note.
 4. **`src/mcp.rs`** — a JSON config with `serde`, servers started together with
    `join_all`, a type alias for a long generic, `Arc` sharing one connection
    between its tools, the same `Tool` trait implemented for someone else's tools.
-5. **`src/session.rs`** and **`src/ui/`** — the session shared through an
-   `Arc` with `Mutex`es held only briefly; the screen as a `tokio::select!`
-   loop over key events, agent events and a tick; ratatui's inline viewport
-   with `insert_before` for the transcript; approvals as a `oneshot` channel.
-6. **`src/main.rs`** — clap subcommands, `spawn_blocking` for stdin, generics
+5. **`src/transcript.rs`** — a tagged `serde` enum as a file format (one JSON
+   line per record), a `Mutex<File>` writer, folding records back into a
+   `Saved` session with `match`.
+6. **`src/session.rs`** and **`src/ui/`** — the session shared through an
+   `Arc` with `Mutex`es held only briefly, an `AtomicU32` read off a forwarding
+   task; the screen as a `tokio::select!` loop over key events, agent events
+   and a tick; ratatui's inline viewport with `insert_before` for the
+   transcript; approvals as a `oneshot` channel.
+7. **`src/main.rs`** — clap subcommands, `spawn_blocking` for stdin, generics
    over a closure that returns a future.
 
 ## Development

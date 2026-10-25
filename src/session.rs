@@ -3,16 +3,18 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::compact::{self, Compacted};
 use crate::agent::scout::Scout;
 use crate::agent::tandem::{Mode, Tandem, TandemOutcome, snapshot};
 use crate::agent::worker::WorkerError;
-use crate::agent::{AgentEvent, Approver, Events, Model, prompts};
+use crate::agent::{AgentEvent, Approver, Events, Model, Role, prompts};
 use crate::config::{Config, PlanWhen};
 use crate::lm::chat::ChatModel;
 use crate::lm::raw::RawModel;
@@ -31,6 +33,10 @@ pub struct Session {
     /// The planner's: read-only built-ins and the scout.
     pub planner_registry: Registry,
     scout_model: String,
+    /// The scout's model once more, for writing the compaction note.
+    digest: Box<dyn Model>,
+    /// Compact once the worker's context reaches this; 0 never.
+    pub compact_at: u32,
     pub ctx: Ctx,
     pub when: PlanWhen,
     pub review_rounds: u8,
@@ -66,14 +72,14 @@ impl Session {
             .model
             .clone()
             .unwrap_or_else(|| config.worker.model.clone());
-        // One scout each, so the planner's and the worker's tool sets are independent.
-        let scout = || {
-            let model: Box<dyn Model> = match config.scout.effort {
+        let helper = || -> Box<dyn Model> {
+            match config.scout.effort {
                 Some(effort) => Box::new(ChatModel::new(endpoint(&scout_model), Some(effort))),
                 None => Box::new(RawModel::new(endpoint(&scout_model), false)),
-            };
-            Box::new(Scout::new(model)) as Box<dyn crate::tools::Tool>
+            }
         };
+        // One scout each, so the planner's and the worker's tool sets are independent.
+        let scout = || Box::new(Scout::new(helper())) as Box<dyn crate::tools::Tool>;
         let mut registry = Registry::builtin();
         registry.extend(vec![scout()]);
         let mut planner_registry = Registry::read_only();
@@ -91,6 +97,8 @@ impl Session {
             worker_thinking: RawModel::new(endpoint(&config.worker.model), true),
             registry,
             planner_registry,
+            digest: helper(),
+            compact_at: config.compact.at,
             scout_model,
             ctx: Ctx::new(root),
             when: config.planner.when,
@@ -215,8 +223,22 @@ impl Session {
         // answer lands in the conversation anyway).
         let (inner, mut inner_rx) = mpsc::channel::<AgentEvent>(256);
         let transcript = self.transcript.lock().unwrap().clone();
+        // The worker's last prompt size, read off its turns as they end.
+        let context = Arc::new(AtomicU32::new(0));
+        let seen = context.clone();
         let forward = tokio::spawn(async move {
             while let Some(evt) = inner_rx.recv().await {
+                if let AgentEvent::TurnEnd {
+                    role: Role::Worker,
+                    usage,
+                    ..
+                } = &evt
+                {
+                    seen.store(
+                        usage.prompt_tokens + usage.completion_tokens,
+                        Ordering::Relaxed,
+                    );
+                }
                 if let Some(t) = &transcript
                     && !matches!(evt, AgentEvent::Text { .. } | AgentEvent::Reasoning { .. })
                 {
@@ -241,8 +263,8 @@ impl Session {
             planner_registry: &self.planner_registry,
             ctx: &ctx,
             approver,
-            events: inner,
-            cancel,
+            events: inner.clone(),
+            cancel: cancel.clone(),
             allowed,
             when: self.when,
             review_rounds: self.review_rounds,
@@ -251,8 +273,6 @@ impl Session {
         let result = tandem.run(task, mode, &mut messages).await;
         *self.allowed.lock().unwrap() = std::mem::take(&mut tandem.allowed);
         drop(tandem);
-        drop(ctx);
-        let _ = forward.await;
 
         match &result {
             Ok(_) => {
@@ -266,6 +286,26 @@ impl Session {
                 *self.lead.lock().unwrap() = lead;
             }
         }
+
+        // A conversation near the window is folded now, between tasks, so the
+        // next one starts with room. A failure here is left for next time.
+        let used = context.load(Ordering::Relaxed);
+        if result.is_ok() && self.compact_at > 0 && used >= self.compact_at {
+            let _ = inner
+                .send(AgentEvent::Phase {
+                    name: "compacting".into(),
+                })
+                .await;
+            if let Ok(done) = self
+                .fold(&ctx, inner.clone(), cancel.clone(), &mut messages, used)
+                .await
+            {
+                let _ = inner.send(done.event()).await;
+            }
+        }
+        drop(ctx);
+        drop(inner);
+        let _ = forward.await;
         self.record(Record::Done {
             at: transcript::now(),
             seconds: began.elapsed().as_secs_f32(),
@@ -273,6 +313,42 @@ impl Session {
         });
         *self.messages.lock().unwrap() = messages;
         result
+    }
+
+    /// `/compact`: fold the earlier tasks into a note now. `before` is the
+    /// worker's context as the screen knows it, for the report.
+    pub async fn compact(
+        &self,
+        events: Events,
+        cancel: CancellationToken,
+        before: u32,
+    ) -> Result<Compacted, WorkerError> {
+        let mut messages = std::mem::take(&mut *self.messages.lock().unwrap());
+        let ctx = self.ctx.for_task(Some(events.clone()), cancel.clone());
+        let result = self.fold(&ctx, events, cancel, &mut messages, before).await;
+        *self.messages.lock().unwrap() = messages;
+        result
+    }
+
+    async fn fold(
+        &self,
+        ctx: &Ctx,
+        events: Events,
+        cancel: CancellationToken,
+        messages: &mut Vec<Message>,
+        before: u32,
+    ) -> Result<Compacted, WorkerError> {
+        let done =
+            compact::compact(self.digest.as_ref(), ctx, events, cancel, messages, before).await?;
+        self.record(Record::Replace {
+            at: transcript::now(),
+            note: format!(
+                "compacted: {} tasks folded into a note at {} tokens",
+                done.tasks, done.before
+            ),
+            messages: messages[1..].to_vec(),
+        });
+        Ok(done)
     }
 
     /// Forget the conversation, keep the approvals.
