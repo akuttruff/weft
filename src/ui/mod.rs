@@ -36,6 +36,7 @@ use crate::agent::compact::Compacted;
 use crate::agent::tandem::{Mode, TandemOutcome};
 use crate::agent::worker::WorkerError;
 use crate::agent::{AgentEvent, Approver, Decision, PlanDecision, Role, Yes};
+use crate::commands;
 use crate::lm::Usage;
 use crate::session::Session;
 use crate::transcript::{self, Saved};
@@ -60,6 +61,14 @@ const COMMANDS: &[(&str, &str, bool)] = &[
     ("/help", "keys and commands", false),
     ("/quit", "leave", false),
 ];
+
+/// One line of the slash menu: a built-in command or a custom one.
+struct MenuItem {
+    name: String,
+    what: String,
+    /// Whether the command wants text after it, so completing it leaves a space.
+    takes_task: bool,
+}
 
 /// Everything the screen hears about.
 enum UiMsg {
@@ -687,24 +696,41 @@ impl App {
             && !self.menu_items().is_empty()
     }
 
-    fn menu_items(&self) -> Vec<&'static (&'static str, &'static str, bool)> {
-        COMMANDS
+    /// Built-in commands, then the custom ones from `.weft/commands`, that
+    /// start with what has been typed.
+    fn menu_items(&self) -> Vec<MenuItem> {
+        let typed = &*self.input;
+        let mut items: Vec<MenuItem> = COMMANDS
             .iter()
-            .filter(|(name, _, _)| name.starts_with(&*self.input))
-            .collect()
+            .filter(|(name, _, _)| name.starts_with(typed))
+            .map(|(name, what, takes_task)| MenuItem {
+                name: name.to_string(),
+                what: what.to_string(),
+                takes_task: *takes_task,
+            })
+            .collect();
+        for c in commands::load(&self.session.ctx.root) {
+            let name = format!("/{}", c.name);
+            if name.starts_with(typed) {
+                items.push(MenuItem {
+                    name,
+                    what: c.description.clone(),
+                    takes_task: c.body.contains("$ARGUMENTS"),
+                });
+            }
+        }
+        items
     }
 
     fn complete_menu(&mut self, tx: &mpsc::Sender<UiMsg>) {
         let items = self.menu_items();
-        let Some(&&(name, _, takes_task)) =
-            items.get(self.menu_at.min(items.len().saturating_sub(1)))
-        else {
+        let Some(item) = items.get(self.menu_at.min(items.len().saturating_sub(1))) else {
             return;
         };
-        if takes_task {
-            self.input.set(format!("{name} "));
+        if item.takes_task {
+            self.input.set(format!("{} ", item.name));
         } else {
-            self.input.set(name.to_string());
+            self.input.set(item.name.clone());
             self.submit(tx);
         }
     }
@@ -805,8 +831,17 @@ impl App {
                 let mut lines = Vec::new();
                 for (name, what, _) in COMMANDS {
                     lines.push(Line::from(vec![
-                        Span::styled(format!("  {name:<8}"), Style::new().fg(Color::Cyan)),
+                        Span::styled(format!("  {name:<10}"), Style::new().fg(Color::Cyan)),
                         Span::styled(what.to_string(), Style::new().dim()),
+                    ]));
+                }
+                for c in commands::load(&self.session.ctx.root) {
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  /{:<9}", c.name), Style::new().fg(Color::Cyan)),
+                        Span::styled(
+                            format!("{} · {}", c.description, c.from.display()),
+                            Style::new().dim(),
+                        ),
                     ]));
                 }
                 lines.push(Line::from(Span::styled("  enter sends · ctrl-j or \\ + enter for a newline · ← → home end move · ↑↓ history · esc stops a task · y/a/n answer approvals · ctrl-c twice leaves", Style::new().dim())));
@@ -817,9 +852,21 @@ impl App {
             }
             "/plan" => self.start(rest, Mode::Plan, tx),
             "/go" => self.start(rest, Mode::Go, tx),
-            c if c.starts_with('/') => self.push(view::note_line(&format!(
-                "unknown command {c}; /help lists them"
-            ))),
+            c if c.starts_with('/') => {
+                // A custom command: the file is the task, shown as what was typed.
+                let custom = commands::load(&self.session.ctx.root)
+                    .into_iter()
+                    .find(|cmd| format!("/{}", cmd.name) == c);
+                match custom {
+                    Some(cmd) => {
+                        let task = commands::expand(&cmd.body, &rest);
+                        self.start_shown(line.clone(), task, cmd.mode, tx);
+                    }
+                    None => self.push(view::note_line(&format!(
+                        "unknown command {c}; /help lists them"
+                    ))),
+                }
+            }
             _ => self.start(line, Mode::Auto, tx),
         }
     }
@@ -888,12 +935,17 @@ impl App {
 
     /// Hand a task to the session on its own tokio task; its events come back through `tx`.
     fn start(&mut self, task: String, mode: Mode, tx: &mpsc::Sender<UiMsg>) {
+        self.start_shown(task.clone(), task, mode, tx);
+    }
+
+    /// The same, showing `shown` in the transcript rather than the task text.
+    fn start_shown(&mut self, shown: String, task: String, mode: Mode, tx: &mpsc::Sender<UiMsg>) {
         if self.running.is_some() {
             self.push(view::note_line("a task is running; esc stops it"));
             return;
         }
         self.tasks += 1;
-        self.push(view::user_line(&task));
+        self.push(view::user_line(&shown));
         let cancel = CancellationToken::new();
         self.running = Some(Running {
             began: Instant::now(),
@@ -1001,15 +1053,15 @@ impl App {
             Span::styled("> ", Style::new().bold()),
             Span::raw(self.input.to_string()),
         ])];
-        for (i, (name, what, _)) in items.iter().enumerate() {
+        for (i, item) in items.iter().enumerate() {
             let style = if i == self.menu_at.min(items.len() - 1) {
                 Style::new().bold().fg(Color::Cyan)
             } else {
                 Style::new()
             };
             lines.push(Line::from(vec![
-                Span::styled(format!("  {name:<8}"), style),
-                Span::styled(what.to_string(), Style::new().dim()),
+                Span::styled(format!("  {:<10}", item.name), style),
+                Span::styled(item.what.clone(), Style::new().dim()),
             ]));
         }
         frame.render_widget(Paragraph::new(Text::from(lines)), area);

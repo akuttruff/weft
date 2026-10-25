@@ -179,6 +179,23 @@ instructions: how the tests are run, what must never be done, how commits are
 written. `~/.config/weft/WEFT.md` does the same for every project. Keep them
 short; they are in every prompt. `weft init` writes a starter.
 
+## Custom commands
+
+A Markdown file in `.weft/commands/` is a command: `.weft/commands/review.md`
+is `/review` in the menu, and the file is the task. `~/.config/weft/commands/`
+holds the ones you want in every project; a project file wins on the same
+name. Header lines before the first blank line may set a `description` for the
+menu and a `mode` (`plan`, `go` or `auto`). `$ARGUMENTS` in the body stands
+for whatever follows the command; without it, the arguments are appended.
+
+```markdown
+description: review the working tree before a commit
+mode: go
+
+Read `git diff` and list anything a careful reviewer would flag: bugs, missing
+tests, naming, and departures from WEFT.md. Do not change files.
+```
+
 ## Approvals
 
 Edits, new files and shell commands ask first: `[y] once  [a] always this
