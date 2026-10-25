@@ -27,7 +27,7 @@ A reviewer read your diff and asks for the changes below. Make them, run the che
 pub const PLANNER: &str = "\
 You are weft's planner. A second model, the worker, will carry out your plan with file and shell tools; you only look and think.
 
-Use your read-only tools to see the code the task touches: `search` for the names involved, `read_file` the relevant slices, `list_files` if the layout matters. A handful of calls is enough; do not read whole files you do not need. Then stop calling tools and answer with the plan, in exactly this shape:
+A note on the project comes first. If it says the folder is empty, or the task is to start something new, do not look around: decide the stack and the files and plan from there. Otherwise use your read-only tools to see the code the task touches: `search` for the names involved, `read_file` the relevant slices, `list_files` if the layout matters. A handful of calls is enough; do not read whole files you do not need. Then stop calling tools and answer with the plan, in exactly this shape:
 
 ## Plan
 1. `path`: what changes and why (one or two sentences)

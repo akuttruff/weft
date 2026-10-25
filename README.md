@@ -3,8 +3,8 @@
 A coding agent for the terminal that runs two local models in tandem through
 [LM Studio](https://lmstudio.ai), in Rust.
 
-- **The planner** (a dense model asked to think hard) writes a short plan and
-  later reviews the diff.
+- **The planner** (a dense model at medium reasoning effort) writes a short plan
+  and later reviews the diff.
 - **The worker** (a fast mixture-of-experts model, thinking off) runs the tool
   loop: reads, searches, edits, runs commands, follows the plan.
 
@@ -42,15 +42,16 @@ shows the tokens used, `/help`, `/quit`.
 
 ## How a task flows
 
-1. **Triage.** The worker is asked, in one word, whether the task needs a plan.
+1. **Project note.** Every task starts with a few lines on the folder: path, stack, git, top-level files, or "the folder is empty: a new project".
+2. **Triage.** The worker is asked, in one word, whether the task needs a plan.
    A question or a one-spot change goes straight to work; anything wider is
    planned first. `/plan <task>` and `/go <task>` override it.
-2. **Plan.** The planner looks at the code with read-only tools (a few searches
+3. **Plan.** The planner looks at the code with read-only tools (a few searches
    and reads), then writes a short plan: files and changes, the one command
    that verifies, pitfalls it noticed.
-3. **Work.** The worker follows the plan with the full tool set, runs the check,
+4. **Work.** The worker follows the plan with the full tool set, runs the check,
    and reports what changed as `path:line`.
-4. **Review.** If files were touched, the planner model reads the diff against
+5. **Review.** If files were touched, the planner model reads the diff against
    the task and plan and answers `APPROVE` or `FIX` with a numbered list. On
    `FIX`, the worker goes again, this time with its thinking on. One review
    round by default (`review_rounds` in the config).
@@ -83,7 +84,7 @@ api_token = "..."            # or set LM_API_TOKEN
 
 [planner]
 model = "qwen/qwen3.8-27b"
-plan_effort = "xhigh"       # low | medium | xhigh
+plan_effort = "medium"      # low | medium | xhigh
 review_effort = "medium"
 when = "auto"               # auto | always | never
 review_rounds = 1           # 0 turns review off

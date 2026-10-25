@@ -131,6 +131,9 @@ impl Tool for ListFiles {
                 hidden += 1;
             }
         }
+        if entries.is_empty() {
+            return Ok("(empty folder)".into());
+        }
         entries.sort();
         let mut out = entries.join("\n");
         out.push('\n');

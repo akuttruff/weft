@@ -53,7 +53,7 @@ pub fn result_line(ok: bool, output: &str, tool: &str) -> Vec<Line<'static>> {
         let first: String = output
             .lines()
             .next()
-            .unwrap_or("")
+            .unwrap_or("(no output)")
             .replace('\t', "  ")
             .chars()
             .take(110)

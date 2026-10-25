@@ -72,9 +72,11 @@ impl Tandem<'_> {
         // The planner, the triage and the reviewer do not see the worker's
         // conversation, so "now add a test for that" needs the earlier exchange.
         let earlier = earlier(messages);
+        let project = snapshot(&self.ctx.root);
 
         // 1. Plan, if this task warrants one.
-        let plan = match self.should_plan(task, earlier.as_deref(), mode).await? {
+        let context = format!("{project}{}", earlier.as_deref().unwrap_or(""));
+        let plan = match self.should_plan(task, Some(&context), mode).await? {
             false => None,
             true => {
                 self.phase("planning").await;
@@ -83,7 +85,7 @@ impl Tandem<'_> {
                     self.looker(self.planner, &read_only, Role::Planner, PLANNER_ROUNDS);
                 let mut convo = vec![
                     Message::System(prompts::PLANNER.into()),
-                    Message::User(with_earlier(task, earlier.as_deref())),
+                    Message::User(with_earlier(task, Some(&context))),
                 ];
                 let plan = planner.run(&mut convo).await?;
                 out.planner_usage = add(out.planner_usage, plan.usage);
@@ -99,9 +101,17 @@ impl Tandem<'_> {
 
         // 2. Work.
         self.phase("working").await;
+        // The worker sees the project note on its first task; after that the
+        // conversation carries it.
+        let fresh = !messages.iter().any(|m| matches!(m, Message::User(_)));
+        let lead = if fresh {
+            project.clone()
+        } else {
+            String::new()
+        };
         let ask = match &plan {
-            Some(p) => format!("{task}\n\n{}\n\n{p}", prompts::WORKER_WITH_PLAN),
-            None => task.to_string(),
+            Some(p) => format!("{lead}{task}\n\n{}\n\n{p}", prompts::WORKER_WITH_PLAN),
+            None => format!("{lead}{task}"),
         };
         messages.push(Message::User(ask));
         let done = self.work(self.worker, messages).await?;
@@ -114,7 +124,7 @@ impl Tandem<'_> {
             self.phase("reviewing").await;
             let diff = diff_of(&self.ctx.root, &out.touched).await;
             let brief = review_brief(
-                &with_earlier(task, earlier.as_deref()),
+                &with_earlier(task, Some(&context)),
                 plan.as_deref(),
                 &out.answer,
                 &diff,
@@ -306,12 +316,64 @@ pub fn earlier(messages: &[Message]) -> Option<String> {
     Some(out)
 }
 
-/// The task, with the earlier exchange above it when there is one.
-fn with_earlier(task: &str, earlier: Option<&str>) -> String {
-    match earlier {
-        Some(e) => format!("{e}## Task\n{task}"),
-        None => task.to_string(),
+/// The task, with the project note and the earlier exchange above it.
+fn with_earlier(task: &str, context: Option<&str>) -> String {
+    match context {
+        Some(c) if !c.is_empty() => format!("{c}## Task\n{task}"),
+        _ => task.to_string(),
     }
+}
+
+/// A few lines on the folder weft is in: what every model is told first, so
+/// an empty folder is a new project and not a mystery.
+pub fn snapshot(root: &Path) -> String {
+    let mut names: Vec<String> = std::fs::read_dir(root)
+        .map(|rd| {
+            rd.flatten()
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                    (name != ".git"
+                        && name != "node_modules"
+                        && name != "target"
+                        && !name.starts_with(".DS"))
+                    .then(|| if is_dir { format!("{name}/") } else { name })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    let git = root.join(".git").exists();
+    let mut out = format!("## Project\nFolder: {}\n", root.display());
+    if names.is_empty() {
+        out.push_str(&format!(
+            "The folder is empty{}: this is a new project. There is nothing to read; choose a sensible stack for the task, lay out the files, and say what you chose.\n\n",
+            if git { " (a git repository)" } else { "" }
+        ));
+        return out;
+    }
+    let stack: Vec<&str> = [
+        ("package.json", "Node"),
+        ("Cargo.toml", "Rust"),
+        ("pyproject.toml", "Python"),
+        ("go.mod", "Go"),
+        ("Gemfile", "Ruby"),
+    ]
+    .iter()
+    .filter(|(f, _)| names.iter().any(|n| n == f))
+    .map(|(_, s)| *s)
+    .collect();
+    if !stack.is_empty() {
+        out.push_str(&format!("Stack: {}\n", stack.join(", ")));
+    }
+    out.push_str(if git { "Git: yes\n" } else { "Git: no\n" });
+    let shown: Vec<&str> = names.iter().take(40).map(String::as_str).collect();
+    out.push_str(&format!("Top level: {}", shown.join(" ")));
+    if names.len() > 40 {
+        out.push_str(&format!(" (+{} more)", names.len() - 40));
+    }
+    out.push_str("\n\n");
+    out
 }
 
 fn clip(s: &str, max: usize) -> String {
@@ -629,9 +691,10 @@ mod tests {
             .unwrap();
         let seen = planner.seen.lock().unwrap().clone();
         assert!(
-            seen[0].starts_with(
-                "## Earlier in this session\n> sort the tiles\nSorted them by status."
-            ),
+            seen[0].starts_with("## Project\n")
+                && seen[0].contains(
+                    "## Earlier in this session\n> sort the tiles\nSorted them by status."
+                ),
             "{}",
             seen[0]
         );
@@ -641,6 +704,20 @@ mod tests {
             seen[0]
         );
         assert_eq!(earlier(&[]), None);
+    }
+
+    #[test]
+    fn snapshot_names_an_empty_folder_and_a_stack() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = snapshot(dir.path());
+        assert!(s.contains("The folder is empty"), "{s}");
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        let s = snapshot(dir.path());
+        assert!(
+            s.contains("Stack: Node") && s.contains("Top level: package.json src/"),
+            "{s}"
+        );
     }
 
     #[test]

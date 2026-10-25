@@ -29,7 +29,7 @@ pub struct LmStudio {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Planner {
     pub model: String,
-    #[serde(default = "Effort::xhigh")]
+    #[serde(default = "Effort::medium")]
     pub plan_effort: Effort,
     #[serde(default = "Effort::medium")]
     pub review_effort: Effort,
@@ -104,7 +104,7 @@ model = "qwen3.5-122b-a10b"
 "#;
         let config: Config = toml::from_str(text).unwrap();
         assert_eq!(config.lm_studio.url, "http://127.0.0.1:1234");
-        assert_eq!(config.planner.plan_effort, Effort::Xhigh);
+        assert_eq!(config.planner.plan_effort, Effort::Medium);
         assert_eq!(config.planner.review_effort, Effort::Medium);
         assert_eq!(config.planner.when, PlanWhen::Auto);
         assert_eq!(config.planner.review_rounds, 1);
