@@ -1,4 +1,4 @@
-# weft
+# <img src="docs/icon.png" width="32" alt=""> Weft
 
 A coding agent for the terminal that runs two local models in tandem through
 [LM Studio](https://lmstudio.ai), in Rust.
@@ -27,7 +27,7 @@ things in a row the way you would type them: "sort the monitor tiles so
 anything that's alerting or warning comes first in its group", then "now add a
 test for that":
 
-![a weft session: a change, then a test for it](docs/weft.png)
+![a Weft session: a change, then a test for it](docs/weft.png)
 
 Each `⏺` line is a tool call with the first line of its result under it. An
 edit or a new file shows the code itself: the lines removed in red and added
@@ -36,7 +36,7 @@ plan sits in a cyan gutter. The second task is understood against the first,
 because the planner is told what the session did before. Edits, new files and
 shell commands ask first, and one key answers:
 
-![weft asking before an edit](docs/approval.png)
+![Weft asking before an edit](docs/approval.png)
 
 Keys: enter sends · ctrl-j (or `\` + enter) for a newline · ← → home end (or
 ctrl-a, ctrl-e) move in the input · ↑↓ history · esc
@@ -76,7 +76,7 @@ only the answer. The models call it themselves; you never ask for it. It shows
 as one `⏺ Scout …` line.
 
 A small model makes a good scout: a 9B answers in 5–15 seconds where the 122B
-takes 20–30. Small models also sometimes cite a file they never opened, so weft
+takes 20–30. Small models also sometimes cite a file they never opened, so Weft
 checks the paths in every answer against the folder and sends the scout back
 once when one is missing; if it still is, the answer carries a note saying so.
 
@@ -87,7 +87,7 @@ declares them. The 27B has `low / medium / xhigh`, so the planner uses the
 OpenAI-style `/v1/chat/completions` route and asks for the level it wants.
 
 The 122B's template has only an on/off switch, and LM Studio does not expose
-it, so the worker uses the raw `/v1/completions` route: weft renders the prompt
+it, so the worker uses the raw `/v1/completions` route: Weft renders the prompt
 in Qwen's chat format itself, starts the assistant turn with an empty
 `<think></think>` block, and parses the `<tool_call>` XML the model writes.
 On a small task that is the difference between a few hundred and a few
@@ -96,7 +96,7 @@ thousand generated tokens.
 ## Setup
 
 `weft init` writes a starter config (and a `WEFT.md` in the current folder)
-where they are missing. At startup weft checks that the configured models are
+where they are missing. At startup Weft checks that the configured models are
 loaded in LM Studio and says so if one is not. By hand:
 
 ```bash
@@ -149,7 +149,7 @@ LM Studio and Claude Desktop use, so an entry can be copied across:
 }
 ```
 
-`command`, `args`, `env` and `cwd` are understood. weft starts every server
+`command`, `args`, `env` and `cwd` are understood. Weft starts every server
 when it starts (stdio; twenty seconds to come up), and the worker sees each
 tool as `server__tool`, for instance `deep-research__research`. Every MCP
 tool asks before it runs; `a` allows that tool for the session. A server that
@@ -185,7 +185,7 @@ project, so nothing shows up in `git status` and the worker never stumbles on
 its own history. `weft sessions` lists a folder's sessions.
 
 **Resuming.** `weft resume` reopens the folder's last session and `weft resume
-<id>` an earlier one; inside weft, `/resume` lists them and `/resume 2` picks
+<id>` an earlier one; inside Weft, `/resume` lists them and `/resume 2` picks
 one. The screen replays each task with the first line of its answer, the
 worker gets its conversation back, and the file is appended to from there. The
 worker is also told the project may have changed, with a fresh folder snapshot,
