@@ -14,6 +14,7 @@ use crate::config::{Config, PlanWhen};
 use crate::lm::chat::ChatModel;
 use crate::lm::raw::RawModel;
 use crate::lm::{Endpoint, Message};
+use crate::mcp;
 use crate::tools::{Ctx, Registry};
 
 pub struct Session {
@@ -25,6 +26,10 @@ pub struct Session {
     pub ctx: Ctx,
     pub when: PlanWhen,
     pub review_rounds: u8,
+    /// The MCP servers that were configured and how each came up.
+    pub mcp: Vec<mcp::Status>,
+    /// The servers themselves, kept so their processes live as long as the session.
+    servers: Vec<mcp::Server>,
     /// Tools approved for the whole session, carried from task to task.
     // Rust: a `Mutex` because the UI runs tasks on spawned tokio tasks that
     // share this struct through an `Arc`; the lock is only ever held briefly,
@@ -55,8 +60,22 @@ impl Session {
             ctx: Ctx { root },
             when: config.planner.when,
             review_rounds: config.planner.review_rounds,
+            mcp: Vec::new(),
+            servers: Vec::new(),
             allowed: Mutex::new(HashSet::new()),
             messages: Mutex::new(vec![Message::System(prompts::WORKER.into())]),
+        }
+    }
+
+    /// Offer the tools of the servers that came up to the worker, and remember
+    /// how every server fared for `/mcp`.
+    pub fn attach_mcp(&mut self, connected: Vec<(mcp::Status, Option<mcp::Server>)>) {
+        for (status, server) in connected {
+            self.mcp.push(status);
+            if let Some(server) = server {
+                self.registry.extend(server.tools());
+                self.servers.push(server);
+            }
         }
     }
 

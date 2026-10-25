@@ -93,6 +93,19 @@ impl Registry {
         Self { tools: vec![] }
     }
 
+    /// More tools (an MCP server's), after the built-in ones.
+    pub fn extend(&mut self, tools: Vec<Box<dyn Tool>>) {
+        self.tools.extend(tools);
+    }
+
+    pub fn len(&self) -> usize {
+        self.tools.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
+    }
+
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.tools.iter().map(|t| t.spec()).collect()
     }

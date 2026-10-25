@@ -7,6 +7,7 @@ use unicode_width::UnicodeWidthChar;
 
 use super::diff::{Kind, Row};
 use crate::lm::Usage;
+use crate::mcp::Status;
 
 /// `> what the user typed`
 pub fn user_line(text: &str) -> Vec<Line<'static>> {
@@ -76,6 +77,65 @@ pub fn result_line(ok: bool, output: &str, tool: &str) -> Vec<Line<'static>> {
         Span::styled("  ⎿ ", style),
         Span::styled(summary, style),
     ])]
+}
+
+/// One dim line at startup: `mcp: deep-research 4 tools · notes failed`.
+pub fn mcp_summary(servers: &[Status]) -> Vec<Line<'static>> {
+    let mut spans = vec![Span::styled("mcp: ", Style::new().dim())];
+    for (i, s) in servers.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", Style::new().dim()));
+        }
+        match &s.tools {
+            Ok(tools) => spans.push(Span::styled(
+                format!(
+                    "{} {} tool{}",
+                    s.name,
+                    tools.len(),
+                    if tools.len() == 1 { "" } else { "s" }
+                ),
+                Style::new().dim(),
+            )),
+            Err(_) => spans.push(Span::styled(
+                format!("{} failed", s.name),
+                Style::new().fg(Color::Red),
+            )),
+        }
+    }
+    vec![Line::from(spans)]
+}
+
+/// `/mcp`: each server with its tools, or why it is not there.
+pub fn mcp_lines(servers: &[Status]) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    for s in servers {
+        match &s.tools {
+            Ok(tools) => {
+                out.push(Line::from(vec![
+                    Span::styled(format!("  {}", s.name), Style::new().bold()),
+                    Span::styled(
+                        format!(
+                            " · {} tool{}",
+                            tools.len(),
+                            if tools.len() == 1 { "" } else { "s" }
+                        ),
+                        Style::new().dim(),
+                    ),
+                ]));
+                for t in tools {
+                    out.push(Line::from(Span::styled(
+                        format!("    {}__{t}", s.name),
+                        Style::new().fg(Color::Cyan),
+                    )));
+                }
+            }
+            Err(e) => out.push(Line::from(vec![
+                Span::styled(format!("  {}", s.name), Style::new().bold()),
+                Span::styled(format!(" · failed: {e}"), Style::new().fg(Color::Red)),
+            ])),
+        }
+    }
+    out
 }
 
 /// What a wrapped diff line's continuation starts with: past the number and the sign.

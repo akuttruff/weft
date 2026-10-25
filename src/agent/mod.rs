@@ -155,7 +155,19 @@ pub fn call_summary(name: &str, args: &serde_json::Value) -> String {
         "edit_file" => format!("Edit {}", s("path")),
         "write_file" => format!("Write {}", s("path")),
         "bash" => format!("Bash {}", s("command").lines().next().unwrap_or("")),
-        other => format!("{other} {}", args),
+        // `server__tool` from an MCP server: the two names and a glimpse of the arguments.
+        other => {
+            let shown = match other.split_once("__") {
+                Some((server, tool)) => format!("{server} {tool}"),
+                None => other.to_string(),
+            };
+            let brief: String = args.to_string().chars().take(80).collect();
+            if brief == "{}" || brief == "null" {
+                shown
+            } else {
+                format!("{shown} {brief}")
+            }
+        }
     }
 }
 
@@ -186,5 +198,13 @@ mod tests {
             "Bash cargo test"
         );
         assert_eq!(call_summary("list_files", &json!({})), "List .");
+        assert_eq!(
+            call_summary("deep-research__search", &json!({"query": "rmcp crate"})),
+            "deep-research search {\"query\":\"rmcp crate\"}"
+        );
+        assert_eq!(
+            call_summary("deep-research__status", &json!({})),
+            "deep-research status"
+        );
     }
 }

@@ -14,7 +14,8 @@ Built on a Mac Studio with `qwen/qwen3.8-27b` as the planner and
 ## Status
 
 Usable. Type `weft` in a repository and give it a task; plan, work and review
-run end to end in the interface below. MCP servers are next.
+run end to end in the interface below. MCP servers plug in. A transcript log
+is next.
 
 ## In the terminal
 
@@ -40,7 +41,8 @@ Keys: enter sends · ctrl-j (or `\` + enter) for a newline · ↑↓ history · 
 stops the task · y / a / n answer approvals · ctrl-c twice leaves. `/` opens a
 menu: `/plan <task>` always plans first, `/go <task>` never does, `/think`
 toggles the worker's thinking, `/clear` starts a fresh conversation, `/cost`
-shows the tokens used, `/help`, `/quit`.
+shows the tokens used, `/mcp` lists the MCP servers and their tools, `/help`,
+`/quit`.
 
 ## How a task flows
 
@@ -98,6 +100,31 @@ EOF
 chmod 600 ~/.config/weft/config.toml
 ```
 
+## MCP servers
+
+Tools from [MCP](https://modelcontextprotocol.io) servers sit beside the
+built-in ones. List the servers in `~/.config/weft/mcp.json`, in the same shape
+LM Studio and Claude Desktop use, so an entry can be copied across:
+
+```json
+{
+  "mcpServers": {
+    "deep-research": {
+      "command": "/opt/homebrew/bin/node",
+      "args": ["/path/to/minimal-mcp-deep-research/dist/index.js"]
+    }
+  }
+}
+```
+
+`command`, `args`, `env` and `cwd` are understood. weft starts every server
+when it starts (stdio; twenty seconds to come up), and the worker sees each
+tool as `server__tool`, for instance `deep-research__research`. Every MCP
+tool asks before it runs; `a` allows that tool for the session. A server that
+fails is reported and skipped; `/mcp` in the interface and `weft mcp` on the
+command line show what came up. The planner and reviewer keep to the
+read-only built-ins.
+
 ## Commands
 
 ```bash
@@ -107,6 +134,7 @@ weft -y …                  # approve every tool call without asking
 weft --think …             # let the worker think before each step
 weft probe                 # ask both models one question; shows each route working
 weft tool search '{"pattern":"fn main","glob":"*.rs"}'   # run one tool by hand
+weft mcp                   # start the MCP servers and list their tools
 ```
 
 Edits, new files and shell commands ask first: `[y] once  [a] always this
@@ -124,6 +152,7 @@ included. `pkill`, `killall` and force pushes are never run.
 | `edit_file` | Replace one exact passage; must match exactly once; reports `path:line` |
 | `write_file` | New files only |
 | `bash` | Runs in the project root, timeout, last 200 lines of output |
+| `server__tool` | Any tool of a configured MCP server; asks first |
 
 ## Reading the code to learn Rust
 
@@ -138,11 +167,14 @@ appears. In order:
    worker loop, `tokio::select!` for cancellation, a forwarding task. Then
    `tandem.rs`: the same loop reused for the planner (read-only tools) and the
    reviewer (no tools), and the verdict parser.
-4. **`src/session.rs`** and **`src/ui/`** — the session shared through an
+4. **`src/mcp.rs`** — a JSON config with `serde`, servers started together with
+   `join_all`, a type alias for a long generic, `Arc` sharing one connection
+   between its tools, the same `Tool` trait implemented for someone else's tools.
+5. **`src/session.rs`** and **`src/ui/`** — the session shared through an
    `Arc` with `Mutex`es held only briefly; the screen as a `tokio::select!`
    loop over key events, agent events and a tick; ratatui's inline viewport
    with `insert_before` for the transcript; approvals as a `oneshot` channel.
-5. **`src/main.rs`** — clap subcommands, `spawn_blocking` for stdin, generics
+6. **`src/main.rs`** — clap subcommands, `spawn_blocking` for stdin, generics
    over a closure that returns a future.
 
 ## Development

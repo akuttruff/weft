@@ -20,6 +20,7 @@ use weft::config::Config;
 use weft::lm::chat::ChatModel;
 use weft::lm::raw::RawModel;
 use weft::lm::{Endpoint, Message, Request, StreamEvent, ToolCall, ToolSpec};
+use weft::mcp::McpConfig;
 use weft::session::Session;
 use weft::tools::{Ctx, Registry};
 use weft::ui::diff;
@@ -58,6 +59,8 @@ enum Command {
         /// The arguments as JSON (default: {})
         args: Option<String>,
     },
+    /// Start the MCP servers in ~/.config/weft/mcp.json and list their tools.
+    Mcp,
 }
 
 #[tokio::main]
@@ -72,16 +75,60 @@ async fn main() -> Result<()> {
 
     match args.command {
         None => {
-            let session = Arc::new(Session::new(&config, std::env::current_dir()?));
-            weft::ui::run(session, args.yes, think).await
+            let mut session = Session::new(&config, std::env::current_dir()?);
+            session.attach_mcp(connect_mcp().await?);
+            weft::ui::run(Arc::new(session), args.yes, think).await
         }
         Some(Command::Run { task }) => {
-            let session = Session::new(&config, std::env::current_dir()?);
+            let mut session = Session::new(&config, std::env::current_dir()?);
+            session.attach_mcp(connect_mcp().await?);
+            for status in &session.mcp {
+                if let Err(e) = &status.tools {
+                    eprintln!("\x1b[31mmcp {}: {e}\x1b[0m", status.name);
+                }
+            }
             run_once(&session, task, args.yes, think).await
         }
         Some(Command::Probe { question }) => probe(&config, question, args.think).await,
         Some(Command::Tool { name, args }) => tool(name, args).await,
+        Some(Command::Mcp) => {
+            for (status, server) in connect_mcp().await? {
+                match (&status.tools, server) {
+                    (Ok(_), Some(server)) => {
+                        println!(
+                            "\x1b[1m{}\x1b[0m · {} tools",
+                            status.name,
+                            server.tools.len()
+                        );
+                        for t in &server.tools {
+                            let first = t
+                                .description
+                                .as_deref()
+                                .unwrap_or("")
+                                .lines()
+                                .next()
+                                .unwrap_or("");
+                            println!(
+                                "  \x1b[36m{}__{}\x1b[0m  \x1b[2m{first}\x1b[0m",
+                                status.name, t.name
+                            );
+                        }
+                    }
+                    (Err(e), _) => {
+                        println!("\x1b[1m{}\x1b[0m · \x1b[31mfailed: {e}\x1b[0m", status.name)
+                    }
+                    (Ok(_), None) => unreachable!("a listed server is a connected server"),
+                }
+            }
+            Ok(())
+        }
     }
+}
+
+/// Start the configured MCP servers; a missing config file means none.
+async fn connect_mcp() -> Result<Vec<(weft::mcp::Status, Option<weft::mcp::Server>)>> {
+    let config = McpConfig::load(&McpConfig::path()?)?;
+    Ok(weft::mcp::connect_all(&config).await)
 }
 
 /// One task on the plain printer: for scripts and for watching the raw stream.
@@ -349,7 +396,16 @@ async fn tool(name: String, args: Option<String>) -> Result<()> {
     let ctx = Ctx {
         root: std::env::current_dir()?,
     };
-    let registry = Registry::builtin();
+    let mut registry = Registry::builtin();
+    let mut servers = Vec::new();
+    if name.contains("__") {
+        for (_, server) in connect_mcp().await?.into_iter() {
+            if let Some(server) = server {
+                registry.extend(server.tools());
+                servers.push(server);
+            }
+        }
+    }
     let call = ToolCall {
         id: "call_1".into(),
         name,

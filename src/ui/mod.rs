@@ -49,6 +49,7 @@ const COMMANDS: &[(&str, &str, bool)] = &[
     ("/think", "toggle the worker's thinking", false),
     ("/clear", "start a fresh conversation", false),
     ("/cost", "tokens used this session", false),
+    ("/mcp", "MCP servers and their tools", false),
     ("/help", "keys and commands", false),
     ("/quit", "leave", false),
 ];
@@ -189,6 +190,9 @@ async fn event_loop(
     app.push(view::note_line(
         "Type a task and press enter. / for commands, esc to stop, ctrl-c twice to leave.",
     ));
+    if !app.session.mcp.is_empty() {
+        app.push(view::mcp_summary(&app.session.mcp));
+    }
 
     while !app.quit {
         app.flush(terminal)?;
@@ -614,6 +618,18 @@ impl App {
                 view::k(self.context),
                 view::k(CONTEXT_WINDOW),
             ))),
+            "/mcp" => {
+                if self.session.mcp.is_empty() {
+                    self.push(view::note_line(&format!(
+                        "no MCP servers; list them in {}",
+                        crate::mcp::McpConfig::path()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|_| "~/.config/weft/mcp.json".into())
+                    )));
+                } else {
+                    self.push(view::mcp_lines(&self.session.mcp));
+                }
+            }
             "/help" => {
                 let mut lines = Vec::new();
                 for (name, what, _) in COMMANDS {
