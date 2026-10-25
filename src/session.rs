@@ -80,7 +80,7 @@ impl Session {
         };
         // One scout each, so the planner's and the worker's tool sets are independent.
         let scout = || Box::new(Scout::new(helper())) as Box<dyn crate::tools::Tool>;
-        let mut registry = Registry::builtin();
+        let mut registry = Registry::builtin().with_rules(config.approve.clone());
         registry.extend(vec![scout()]);
         let mut planner_registry = Registry::read_only();
         planner_registry.extend(vec![scout()]);

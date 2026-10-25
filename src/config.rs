@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::lm::Effort;
+use crate::tools::Rules;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -16,6 +17,9 @@ pub struct Config {
     pub scout: Scout,
     #[serde(default)]
     pub compact: Compact,
+    /// Tool calls that run without asking.
+    #[serde(default)]
+    pub approve: Rules,
 }
 
 /// When the worker's conversation is folded into a handover note.
@@ -151,5 +155,6 @@ model = "qwen3.5-122b-a10b"
         assert_eq!(config.scout.model, None);
         assert_eq!(config.scout.effort, None);
         assert_eq!(config.compact.at, 48_000);
+        assert!(config.approve.commands.is_empty());
     }
 }

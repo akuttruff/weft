@@ -12,6 +12,7 @@ pub mod search;
 use std::path::{Component, Path, PathBuf};
 
 use async_trait::async_trait;
+use serde::Deserialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -82,9 +83,57 @@ pub trait Tool: Send + Sync {
     async fn run(&self, args: &Value, ctx: &Ctx) -> Result<String, ToolError>;
 }
 
+/// Calls that run without asking: `[approve]` in the config.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Rules {
+    /// Tools that never ask, by name.
+    #[serde(default)]
+    pub tools: Vec<String>,
+    /// Shell commands that never ask, by leading words: `cargo test` lets
+    /// `cargo test --lib` through, not `cargo testx`. Every part of a chain
+    /// (`&&`, `;`, `|`, a newline) must match, and nothing with a `$(…)` or a
+    /// backtick in it does.
+    #[serde(default)]
+    pub commands: Vec<String>,
+}
+
+impl Rules {
+    pub fn allows(&self, name: &str, args: &Value) -> bool {
+        if self.tools.iter().any(|t| t == name) {
+            return true;
+        }
+        match (name, args.get("command").and_then(Value::as_str)) {
+            ("bash", Some(cmd)) => self.allows_command(cmd),
+            _ => false,
+        }
+    }
+
+    pub fn allows_command(&self, cmd: &str) -> bool {
+        if self.commands.is_empty() || cmd.contains("$(") || cmd.contains('`') {
+            return false;
+        }
+        cmd.split(['\n', ';', '|'])
+            .flat_map(|part| part.split("&&"))
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .all(|part| self.commands.iter().any(|c| leads_with(part, c)))
+    }
+}
+
+/// `cmd` is `words`, or `words` followed by a space.
+fn leads_with(cmd: &str, words: &str) -> bool {
+    let words = words.trim();
+    !words.is_empty()
+        && (cmd == words
+            || cmd
+                .strip_prefix(words)
+                .is_some_and(|rest| rest.starts_with(char::is_whitespace)))
+}
+
 /// All the tools, by name.
 pub struct Registry {
     tools: Vec<Box<dyn Tool>>,
+    rules: Rules,
 }
 
 impl Registry {
@@ -99,7 +148,14 @@ impl Registry {
                 Box::new(files::WriteFile),
                 Box::new(bash::Bash),
             ],
+            rules: Rules::default(),
         }
+    }
+
+    /// The same tools, with these calls allowed without asking.
+    pub fn with_rules(mut self, rules: Rules) -> Self {
+        self.rules = rules;
+        self
     }
 
     /// Looking only: what the planner gets.
@@ -110,12 +166,16 @@ impl Registry {
                 Box::new(files::ListFiles),
                 Box::new(search::Search),
             ],
+            rules: Rules::default(),
         }
     }
 
     /// No tools: a single question and answer.
     pub fn empty() -> Self {
-        Self { tools: vec![] }
+        Self {
+            tools: vec![],
+            rules: Rules::default(),
+        }
     }
 
     /// More tools (an MCP server's), after the built-in ones.
@@ -144,8 +204,12 @@ impl Registry {
             .map(|t| t.as_ref())
     }
 
-    /// What approving this call would allow, if it needs approval.
+    /// What approving this call would allow, if it needs approval. A call the
+    /// config's rules allow needs none.
     pub fn approval(&self, call: &ToolCall) -> Option<String> {
+        if self.rules.allows(&call.name, &call.arguments) {
+            return None;
+        }
         self.get(&call.name)?.approval(&call.arguments)
     }
 
@@ -265,6 +329,28 @@ pub fn cap(text: &str, max_lines: usize, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rules_match_leading_words_in_every_part_of_a_chain() {
+        let rules = Rules {
+            tools: vec!["edit_file".into()],
+            commands: vec![
+                "cargo test".into(),
+                "git status".into(),
+                "ls".into(),
+                "head".into(),
+            ],
+        };
+        let bash = |c: &str| serde_json::json!({"command": c});
+        assert!(rules.allows("edit_file", &serde_json::json!({})));
+        assert!(!rules.allows("write_file", &serde_json::json!({})));
+        assert!(rules.allows("bash", &bash("cargo test --lib")));
+        assert!(rules.allows("bash", &bash("git status && ls -la | head")));
+        assert!(!rules.allows("bash", &bash("cargo testx")));
+        assert!(!rules.allows("bash", &bash("ls; rm -rf x")));
+        assert!(!rules.allows("bash", &bash("ls $(rm x)")));
+        assert!(!Rules::default().allows("bash", &bash("ls")));
+    }
 
     #[test]
     fn resolve_keeps_paths_inside_the_root() {

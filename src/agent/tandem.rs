@@ -360,6 +360,45 @@ fn with_earlier(task: &str, context: Option<&str>) -> String {
 /// A few lines on the folder weft is in: what every model is told first, so
 /// an empty folder is a new project and not a mystery.
 pub fn snapshot(root: &Path) -> String {
+    let global = std::env::home_dir().map(|h| h.join(".config/weft/WEFT.md"));
+    format!("{}{}", folder_note(root), notes(root, global.as_deref()))
+}
+
+/// How much of a notes file the models are shown, in characters.
+const NOTES_CHARS: usize = 8_000;
+
+/// The user's standing instructions: `~/.config/weft/WEFT.md` for every
+/// project and `WEFT.md` in the folder for this one, as a `## Project notes`
+/// section. Empty when there are none.
+pub fn notes(root: &Path, global: Option<&Path>) -> String {
+    let mut out = String::new();
+    let files = [
+        ("for every project", global.map(Path::to_path_buf)),
+        ("for this project", Some(root.join("WEFT.md"))),
+    ];
+    for (label, path) in files {
+        let Some(path) = path else { continue };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if text.trim().is_empty() {
+            continue;
+        }
+        out.push_str(&format!(
+            "### Notes {label} ({})\n{}\n\n",
+            path.display(),
+            clip(text.trim(), NOTES_CHARS)
+        ));
+    }
+    if out.is_empty() {
+        return out;
+    }
+    format!(
+        "## Project notes\nThe user's standing instructions. Follow them; they outrank the usual defaults.\n\n{out}"
+    )
+}
+
+fn folder_note(root: &Path) -> String {
     let mut names: Vec<String> = std::fs::read_dir(root)
         .map(|rd| {
             rd.flatten()
@@ -773,6 +812,29 @@ mod tests {
                 ("sort the tiles".to_string(), "Sorted.".to_string()),
                 ("now add a test".to_string(), "Added one.".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn notes_come_from_the_folder_and_the_global_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(notes(dir.path(), None), "");
+        std::fs::write(
+            dir.path().join("WEFT.md"),
+            "Run `cargo test` before answering.\n",
+        )
+        .unwrap();
+        let global = dir.path().join("global.md");
+        std::fs::write(&global, "One-line commits.").unwrap();
+        let text = notes(dir.path(), Some(&global));
+        assert!(text.starts_with("## Project notes\n"), "{text}");
+        let every = text.find("for every project").unwrap();
+        let this = text.find("for this project").unwrap();
+        assert!(every < this && text.contains("One-line commits.") && text.contains("cargo test"));
+        let s = snapshot(dir.path());
+        assert!(
+            s.starts_with("## Project\n") && s.contains("## Project notes"),
+            "{s}"
         );
     }
 

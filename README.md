@@ -119,6 +119,10 @@ thinking = false            # the planner carries the reasoning; fix rounds thin
 
 [compact]
 at = 48000                  # fold the conversation once the worker's context reaches this; 0 never
+
+[approve]                   # tool calls that never ask
+# tools = ["edit_file"]
+commands = ["cargo test", "cargo build", "cargo clippy", "git status", "git diff", "git log", "ls"]
 EOF
 chmod 600 ~/.config/weft/config.toml
 ```
@@ -147,6 +151,24 @@ tool asks before it runs; `a` allows that tool for the session. A server that
 fails is reported and skipped; `/mcp` in the interface and `weft mcp` on the
 command line show what came up. The planner and reviewer keep to the
 read-only built-ins.
+
+## Project notes
+
+A `WEFT.md` in the project root is read at the start of every task and shown
+to the planner, the worker, the reviewer and the scout as your standing
+instructions: how the tests are run, what must never be done, how commits are
+written. `~/.config/weft/WEFT.md` does the same for every project. Keep them
+short; they are in every prompt.
+
+## Approvals
+
+Edits, new files and shell commands ask first: `[y] once  [a] always this
+session  [n] no`. The `[approve]` section of the config names what never asks:
+tools by name, and shell commands by their leading words. `cargo test` lets
+`cargo test --lib` through and not `cargo testx`; every part of a chain joined
+with `&&`, `;`, `|` or a newline has to match, and a command with a `$(…)` or a
+backtick in it always asks. The rules live in your config, never in the
+project, so a repository cannot grant itself permissions.
 
 ## Sessions
 
@@ -188,10 +210,9 @@ weft tool search '{"pattern":"fn main","glob":"*.rs"}'   # run one tool by hand
 weft mcp                   # start the MCP servers and list their tools
 ```
 
-Edits, new files and shell commands ask first: `[y] once  [a] always this
-session  [n] no`. Ctrl-C stops the current task and keeps the session. Every
-path is resolved against the project root and refused outside it, symlinks
-included. `pkill`, `killall` and force pushes are never run.
+Ctrl-C stops the current task and keeps the session. Every path is resolved
+against the project root and refused outside it, symlinks included. `pkill`,
+`killall` and force pushes are never run.
 
 ## Tools the worker has
 
