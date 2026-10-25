@@ -69,9 +69,12 @@ impl Tandem<'_> {
         messages: &mut Vec<Message>,
     ) -> Result<TandemOutcome, WorkerError> {
         let mut out = TandemOutcome::default();
+        // The planner, the triage and the reviewer do not see the worker's
+        // conversation, so "now add a test for that" needs the earlier exchange.
+        let earlier = earlier(messages);
 
         // 1. Plan, if this task warrants one.
-        let plan = match self.should_plan(task, mode).await? {
+        let plan = match self.should_plan(task, earlier.as_deref(), mode).await? {
             false => None,
             true => {
                 self.phase("planning").await;
@@ -80,7 +83,7 @@ impl Tandem<'_> {
                     self.looker(self.planner, &read_only, Role::Planner, PLANNER_ROUNDS);
                 let mut convo = vec![
                     Message::System(prompts::PLANNER.into()),
-                    Message::User(task.to_string()),
+                    Message::User(with_earlier(task, earlier.as_deref())),
                 ];
                 let plan = planner.run(&mut convo).await?;
                 out.planner_usage = add(out.planner_usage, plan.usage);
@@ -110,7 +113,12 @@ impl Tandem<'_> {
             round += 1;
             self.phase("reviewing").await;
             let diff = diff_of(&self.ctx.root, &out.touched).await;
-            let brief = review_brief(task, plan.as_deref(), &out.answer, &diff);
+            let brief = review_brief(
+                &with_earlier(task, earlier.as_deref()),
+                plan.as_deref(),
+                &out.answer,
+                &diff,
+            );
             let empty = Registry::empty();
             let mut reviewer = self.looker(self.reviewer, &empty, Role::Planner, 1);
             let mut convo = vec![
@@ -141,7 +149,12 @@ impl Tandem<'_> {
         Ok(out)
     }
 
-    async fn should_plan(&self, task: &str, mode: Mode) -> Result<bool, WorkerError> {
+    async fn should_plan(
+        &self,
+        task: &str,
+        earlier: Option<&str>,
+        mode: Mode,
+    ) -> Result<bool, WorkerError> {
         Ok(match (mode, self.when) {
             (Mode::Plan, _) | (Mode::Auto, PlanWhen::Always) => true,
             (Mode::Go, _) | (Mode::Auto, PlanWhen::Never) => false,
@@ -162,7 +175,7 @@ impl Tandem<'_> {
                 };
                 let mut convo = vec![
                     Message::System(prompts::TRIAGE.into()),
-                    Message::User(task.to_string()),
+                    Message::User(with_earlier(task, earlier)),
                 ];
                 let word = triage.run(&mut convo).await?.answer;
                 word.trim_start().to_uppercase().starts_with("PLAN")
@@ -256,6 +269,57 @@ pub fn verdict(text: &str) -> (bool, String) {
     }
     let rest = rest.join("\n").trim().to_string();
     (approved, rest)
+}
+
+/// The last few tasks and answers of this session, for the models that do not
+/// share the worker's conversation. `None` on a fresh session.
+pub fn earlier(messages: &[Message]) -> Option<String> {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut task: Option<String> = None;
+    for m in messages {
+        match m {
+            // A fix request is part of the previous task, not a new one.
+            Message::User(s) if !s.starts_with(prompts::WORKER_FIX) => {
+                // The plan was appended after a blank line; the task is what came before it.
+                task = Some(s.split("\n\n").next().unwrap_or(s).trim().to_string());
+            }
+            Message::Assistant {
+                content,
+                tool_calls,
+                ..
+            } if tool_calls.is_empty() => {
+                if let Some(t) = task.take() {
+                    pairs.push((t, content.trim().to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+    if pairs.is_empty() {
+        return None;
+    }
+    let keep = pairs.len().saturating_sub(3);
+    let mut out = String::from("## Earlier in this session\n");
+    for (t, a) in &pairs[keep..] {
+        out.push_str(&format!("> {t}\n{}\n\n", clip(a, 1200)));
+    }
+    Some(out)
+}
+
+/// The task, with the earlier exchange above it when there is one.
+fn with_earlier(task: &str, earlier: Option<&str>) -> String {
+    match earlier {
+        Some(e) => format!("{e}## Task\n{task}"),
+        None => task.to_string(),
+    }
+}
+
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", s.chars().take(max).collect::<String>())
+    }
 }
 
 /// What the reviewer reads.
@@ -520,6 +584,63 @@ mod tests {
         assert_eq!(out.plan, None);
         assert_eq!(out.answer, "It exports slugify.");
         assert!(out.reviews.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_planner_hears_what_came_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = Ctx {
+            root: dir.path().to_path_buf(),
+        };
+        let registry = Registry::builtin();
+        let planner = Scripted::new("planner", vec![Scripted::text("## Plan\n1. add a test")]);
+        let reviewer = Scripted::new("reviewer", vec![]);
+        let worker = Scripted::new("worker", vec![Scripted::text("Added the test.")]);
+        let (events, _rx) = mpsc::channel(64);
+        let mut tandem = Tandem {
+            planner: &planner,
+            reviewer: &reviewer,
+            worker: &worker,
+            worker_thinking: &worker,
+            registry: &registry,
+            ctx: &ctx,
+            approver: &Yes,
+            events,
+            cancel: CancellationToken::new(),
+            allowed: HashSet::new(),
+            when: PlanWhen::Always,
+            review_rounds: 1,
+        };
+        let mut messages = vec![
+            Message::System("sys".into()),
+            Message::User(format!(
+                "sort the tiles\n\n{}\n\n## Plan",
+                prompts::WORKER_WITH_PLAN
+            )),
+            Message::Assistant {
+                content: "Sorted them by status.".into(),
+                reasoning: None,
+                tool_calls: vec![],
+            },
+        ];
+        tandem
+            .run("now add a test for that", Mode::Plan, &mut messages)
+            .await
+            .unwrap();
+        let seen = planner.seen.lock().unwrap().clone();
+        assert!(
+            seen[0].starts_with(
+                "## Earlier in this session\n> sort the tiles\nSorted them by status."
+            ),
+            "{}",
+            seen[0]
+        );
+        assert!(
+            seen[0].ends_with("## Task\nnow add a test for that"),
+            "{}",
+            seen[0]
+        );
+        assert_eq!(earlier(&[]), None);
     }
 
     #[test]
