@@ -92,6 +92,15 @@ impl RawModel {
             reply.take(&evt);
             let _ = tx.try_send(evt);
         }
+        // This route counts every generated token as completion; it knows nothing
+        // of the think block. Split the count by share of characters, close enough
+        // for a cost line.
+        if reply.usage.reasoning_tokens == 0 && !reply.reasoning.is_empty() {
+            let total = (reply.reasoning.len() + reply.content.len()).max(1) as f64;
+            let share = reply.reasoning.len() as f64 / total;
+            reply.usage.reasoning_tokens =
+                (reply.usage.completion_tokens as f64 * share).round() as u32;
+        }
         Ok(reply)
     }
 }
@@ -208,6 +217,9 @@ fn render_call(call: &ToolCall) -> String {
 /// back only as far as needed to be sure a tag is not about to start.
 pub struct Parser<'a> {
     in_reasoning: bool,
+    /// Drop newlines at the start of the text: the format puts some after the
+    /// think block and between calls, and the model often adds more.
+    skip_newlines: bool,
     buf: String,
     tools: &'a [ToolSpec],
     next_id: usize,
@@ -223,6 +235,7 @@ impl<'a> Parser<'a> {
     pub fn new(thinking: bool, tools: &'a [ToolSpec]) -> Self {
         Self {
             in_reasoning: thinking,
+            skip_newlines: true,
             buf: String::new(),
             tools,
             next_id: 1,
@@ -238,18 +251,22 @@ impl<'a> Parser<'a> {
                     let reasoning: String = self.buf.drain(..at).collect();
                     self.buf.drain(..THINK_END.len());
                     self.in_reasoning = false;
+                    self.skip_newlines = true;
                     push_text(&mut out, StreamEvent::Reasoning, reasoning);
-                    // The template puts two newlines after the block; drop them.
-                    let lead = self.buf.len() - self.buf.trim_start_matches('\n').len();
-                    if lead > 0 {
-                        self.buf.drain(..lead);
-                    }
                     continue;
                 }
                 let safe = self.buf.len() - tail_held_back(&self.buf, THINK_END);
                 let reasoning: String = self.buf.drain(..safe).collect();
                 push_text(&mut out, StreamEvent::Reasoning, reasoning);
                 return out;
+            }
+            if self.skip_newlines {
+                let lead = self.buf.len() - self.buf.trim_start_matches('\n').len();
+                self.buf.drain(..lead);
+                if self.buf.is_empty() {
+                    return out; // more newlines may follow; keep skipping
+                }
+                self.skip_newlines = false;
             }
             if let Some(start) = self.buf.find(CALL_START) {
                 let Some(end) = self.buf[start..].find(CALL_END) else {
@@ -267,9 +284,7 @@ impl<'a> Parser<'a> {
                     out.push(StreamEvent::ToolCall(call));
                 }
                 // A newline between calls belongs to the format, not the text.
-                if self.buf.starts_with('\n') {
-                    self.buf.remove(0);
-                }
+                self.skip_newlines = true;
                 continue;
             }
             let safe = self.buf.len() - tail_held_back(&self.buf, CALL_START);
@@ -521,6 +536,24 @@ mod tests {
         if let StreamEvent::ToolCall(c) = &events[1] {
             assert_eq!(c.arguments["all"], true);
         }
+    }
+
+    #[test]
+    fn drops_newlines_after_the_think_block_even_across_chunks() {
+        let mut p = Parser::new(true, &[]);
+        let mut events = Vec::new();
+        for piece in ["ok</think>\n\n", "\n", "\nEarth", "\nis round"] {
+            events.extend(p.push(piece));
+        }
+        events.extend(p.finish());
+        assert_eq!(
+            events,
+            vec![
+                StreamEvent::Reasoning("ok".into()),
+                StreamEvent::Text("Earth".into()),
+                StreamEvent::Text("\nis round".into()),
+            ]
+        );
     }
 
     #[test]
