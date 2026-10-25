@@ -35,8 +35,8 @@ use crate::lm::Usage;
 use crate::session::Session;
 
 /// Rows of the live area: streamed text, status, the input box, the footer.
-const LIVE_ROWS: u16 = 12;
-const TAIL_ROWS: u16 = 5;
+const LIVE_ROWS: u16 = 8;
+const TAIL_ROWS: u16 = 1;
 const BOX_ROWS: u16 = 5; // border + 3 lines + border
 const TICK: Duration = Duration::from_millis(120);
 const SPINNER: [&str; 6] = ["✻", "✢", "✳", "✶", "✻", "✽"];
@@ -92,8 +92,10 @@ struct Running {
     phase: &'static str,
     /// The role of the turn under way and how much it has thought, for the status line.
     turn: Option<(Role, usize)>,
-    /// The worker's answer text as it streams, before it is pushed to the transcript.
+    /// The unfinished last line of the worker's answer; whole lines go to the transcript as they complete.
     text: String,
+    /// Whether the current answer block has had its `⏺` line yet.
+    answer_open: bool,
     cancel: CancellationToken,
 }
 
@@ -117,6 +119,9 @@ struct App {
     /// The worker's last prompt size: how full its context is.
     context: u32,
     tasks: usize,
+    flush_failed: bool,
+    /// The tool whose result is next, for the summary line.
+    last_tool: String,
 }
 
 pub async fn run(session: Arc<Session>, yes: bool, think: bool) -> Result<()> {
@@ -160,6 +165,8 @@ async fn event_loop(
         worker_usage: Usage::default(),
         context: 0,
         tasks: 0,
+        flush_failed: false,
+        last_tool: String::new(),
     };
     let (tx, mut rx) = mpsc::channel::<UiMsg>(512);
     let mut keys = EventStream::new();
@@ -208,22 +215,35 @@ impl App {
     }
 
     /// Write the waiting lines above the live area, wrapped to the terminal's width.
+    /// A terminal that will not take them (rare: one that cannot report its
+    /// cursor) loses those lines but keeps the session; the error is shown once.
     fn flush(&mut self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         let width = terminal.size()?.width.max(10);
         for lines in std::mem::take(&mut self.out) {
             let para = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
             let height = para.line_count(width).max(1) as u16;
-            terminal.insert_before(height, |buf| para.render(buf.area, buf))?;
+            if let Err(e) = terminal.insert_before(height, |buf| para.render(buf.area, buf))
+                && !self.flush_failed
+            {
+                self.flush_failed = true;
+                let note = view::error_line(&format!("  (the terminal refused some output: {e})"));
+                let _ = terminal.insert_before(1, |buf| {
+                    Paragraph::new(Text::from(note)).render(buf.area, buf)
+                });
+            }
         }
         Ok(())
     }
 
-    /// The worker's streamed text so far becomes an answer block.
+    /// The unfinished line of the worker's answer goes to the transcript; the block is closed.
     fn flush_text(&mut self) {
         if let Some(r) = &mut self.running {
             let text = std::mem::take(&mut r.text);
+            let first = !r.answer_open;
+            r.answer_open = false;
             if !text.trim().is_empty() {
-                self.push(view::answer_lines(&text));
+                self.out
+                    .push(vec![view::answer_line(text.trim_end(), first)]);
             }
         }
     }
@@ -273,14 +293,29 @@ impl App {
             } => {
                 if let Some(r) = &mut self.running {
                     r.text.push_str(&text);
+                    // Whole lines go straight to the transcript; the partial last line stays live.
+                    while let Some(at) = r.text.find('\n') {
+                        let line: String = r.text.drain(..=at).collect();
+                        let line = line.trim_end_matches('\n');
+                        if line.trim().is_empty() && !r.answer_open {
+                            continue;
+                        }
+                        let first = !r.answer_open;
+                        r.answer_open = true;
+                        self.out.push(vec![view::answer_line(line, first)]);
+                    }
                 }
             }
             AgentEvent::Text { .. } => {}
-            AgentEvent::ToolStart { summary, .. } => {
+            AgentEvent::ToolStart { summary, name, .. } => {
+                self.last_tool = name;
                 self.flush_text();
                 self.push(view::tool_line(&summary));
             }
-            AgentEvent::ToolDone { ok, output, .. } => self.push(view::result_line(ok, &output)),
+            AgentEvent::ToolDone { ok, output, .. } => {
+                let line = view::result_line(ok, &output, &self.last_tool);
+                self.push(line)
+            }
             AgentEvent::Plan { text } => self.push(view::plan_lines(&text)),
             AgentEvent::Review { approved, text } => self.push(view::review_lines(approved, &text)),
             AgentEvent::TurnEnd { role, usage, .. } => {
@@ -578,6 +613,7 @@ impl App {
             phase: "starting",
             turn: None,
             text: String::new(),
+            answer_open: false,
             cancel: cancel.clone(),
         });
 
@@ -614,6 +650,10 @@ impl App {
 
     fn render(&self, frame: &mut ratatui::Frame) {
         let area = frame.area();
+        if self.menu_open() {
+            self.render_menu(frame, area);
+            return;
+        }
         let [tail, status, input, footer] = Layout::vertical([
             Constraint::Length(TAIL_ROWS),
             Constraint::Length(1),
@@ -626,13 +666,10 @@ impl App {
         if let Some(r) = &self.running
             && !r.text.is_empty()
         {
-            let para =
-                Paragraph::new(Text::from(view::answer_lines(&r.text))).wrap(Wrap { trim: false });
+            let para = Paragraph::new(Text::from(vec![view::answer_line(&r.text, !r.answer_open)]))
+                .wrap(Wrap { trim: false });
             let count = para.line_count(tail.width) as u16;
             frame.render_widget(para.scroll((count.saturating_sub(tail.height), 0)), tail);
-        }
-        if self.menu_open() {
-            self.render_menu(frame, tail);
         }
 
         frame.render_widget(Paragraph::new(self.status_line()), status);
@@ -670,9 +707,13 @@ impl App {
         frame.render_widget(Paragraph::new(self.footer_line()), footer);
     }
 
+    /// While a command is being typed, the live area shows the line and the matching commands.
     fn render_menu(&self, frame: &mut ratatui::Frame, area: Rect) {
         let items = self.menu_items();
-        let mut lines = Vec::new();
+        let mut lines = vec![Line::from(vec![
+            Span::styled("> ", Style::new().bold()),
+            Span::raw(self.input.clone()),
+        ])];
         for (i, (name, what, _)) in items.iter().enumerate() {
             let style = if i == self.menu_at.min(items.len() - 1) {
                 Style::new().bold().fg(Color::Cyan)
@@ -680,21 +721,12 @@ impl App {
                 Style::new()
             };
             lines.push(Line::from(vec![
-                Span::styled(format!(" {name:<8}"), style),
+                Span::styled(format!("  {name:<8}"), style),
                 Span::styled(what.to_string(), Style::new().dim()),
             ]));
         }
-        let rows = (lines.len() as u16).min(area.height);
-        let menu = Rect {
-            x: area.x,
-            y: area.y + area.height - rows,
-            width: area.width.min(60),
-            height: rows,
-        };
-        frame.render_widget(
-            Paragraph::new(Text::from(lines)).style(Style::new().bg(Color::Black)),
-            menu,
-        );
+        frame.render_widget(Paragraph::new(Text::from(lines)), area);
+        frame.set_cursor_position((area.x + 2 + self.input.width() as u16, area.y));
     }
 
     fn status_line(&self) -> Line<'static> {

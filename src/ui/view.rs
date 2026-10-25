@@ -35,20 +35,32 @@ pub fn tool_line(summary: &str) -> Vec<Line<'static>> {
     ])]
 }
 
-/// `  ⎿ first line of the result (+n lines)`
-pub fn result_line(ok: bool, output: &str) -> Vec<Line<'static>> {
-    let first: String = output
-        .lines()
-        .next()
-        .unwrap_or("")
-        .chars()
-        .take(110)
-        .collect();
+/// `  ⎿ first line of the result (+n lines)`, or `Read 18 lines` for a file.
+pub fn result_line(ok: bool, output: &str, tool: &str) -> Vec<Line<'static>> {
     let n = output.lines().count();
-    let more = if n > 1 {
-        format!(" (+{} lines)", n - 1)
+    let summary = if ok && tool == "read_file" {
+        let numbered = output
+            .lines()
+            .filter(|l| {
+                l.trim_start().starts_with(|c: char| c.is_ascii_digit()) && l.contains('\t')
+            })
+            .count();
+        format!("Read {numbered} lines")
     } else {
-        String::new()
+        let first: String = output
+            .lines()
+            .next()
+            .unwrap_or("")
+            .replace('\t', "  ")
+            .chars()
+            .take(110)
+            .collect();
+        let more = if n > 1 {
+            format!(" (+{} lines)", n - 1)
+        } else {
+            String::new()
+        };
+        format!("{first}{more}")
     };
     let style = if ok {
         Style::new().dim()
@@ -57,7 +69,7 @@ pub fn result_line(ok: bool, output: &str) -> Vec<Line<'static>> {
     };
     vec![Line::from(vec![
         Span::styled("  ⎿ ", style),
-        Span::styled(format!("{first}{more}"), style),
+        Span::styled(summary, style),
     ])]
 }
 
@@ -96,24 +108,20 @@ pub fn review_lines(approved: bool, text: &str) -> Vec<Line<'static>> {
     out
 }
 
-/// The answer: `⏺ ` on the first line, light markdown throughout.
-pub fn answer_lines(text: &str) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    for (i, l) in text.trim().lines().enumerate() {
-        let mut spans = vec![Span::styled(
-            if i == 0 { "⏺ " } else { "  " },
-            Style::new().fg(Color::White),
-        )];
-        let base = if l.starts_with('#') {
-            Style::new().bold()
-        } else {
-            Style::new()
-        };
-        let l = l.trim_start_matches('#').trim_start();
-        spans.extend(inline(l, base));
-        out.push(Line::from(spans));
-    }
-    out
+/// One line of the answer: `⏺ ` on the first line of a block, two spaces after.
+pub fn answer_line(l: &str, first: bool) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        if first { "⏺ " } else { "  " },
+        Style::new().fg(Color::White),
+    )];
+    let base = if l.starts_with('#') {
+        Style::new().bold()
+    } else {
+        Style::new()
+    };
+    let l = l.trim_start_matches('#').trim_start();
+    spans.extend(inline(l, base));
+    Line::from(spans)
 }
 
 pub fn note_line(text: &str) -> Vec<Line<'static>> {
@@ -216,7 +224,13 @@ mod tests {
 
     #[test]
     fn result_line_summarises() {
-        let l = result_line(true, "a\nb\nc");
+        let l = result_line(true, "a\nb\nc", "bash");
         assert_eq!(l[0].spans[1].content, "a (+2 lines)");
+        let l = result_line(
+            true,
+            "1\tfn a() {}\n2\t}\n[lines 3-9 follow]\n",
+            "read_file",
+        );
+        assert_eq!(l[0].spans[1].content, "Read 2 lines");
     }
 }
