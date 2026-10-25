@@ -2,6 +2,7 @@
 //! whatever is drawing the screen.
 
 pub mod prompts;
+pub mod tandem;
 pub mod worker;
 
 use async_trait::async_trait;
@@ -73,6 +74,19 @@ pub enum AgentEvent {
         id: String,
         ok: bool,
         output: String,
+    },
+    /// The tandem moved on: planning, working, reviewing, fixing.
+    Phase {
+        name: String,
+    },
+    /// The planner's plan, whole.
+    Plan {
+        text: String,
+    },
+    /// The reviewer's verdict on the diff.
+    Review {
+        approved: bool,
+        text: String,
     },
     /// A model finished a turn and this is what it cost.
     TurnEnd {

@@ -12,7 +12,7 @@ use crate::lm::{Message, Request, StreamEvent, Usage};
 use crate::tools::{Ctx, Registry, ToolError};
 
 /// Tool rounds before the loop gives up on a task.
-const MAX_ROUNDS: usize = 60;
+pub const MAX_ROUNDS: usize = 60;
 const MAX_TOKENS: u32 = 8_000;
 
 #[derive(Debug, thiserror::Error)]
@@ -45,6 +45,10 @@ pub struct Worker<'a> {
     pub cancel: CancellationToken,
     /// Tools approved for the whole session.
     pub allowed: HashSet<String>,
+    /// Who is speaking, for the screen: the planner also runs this loop, read-only.
+    pub role: Role,
+    /// Tool rounds before giving up; see `MAX_ROUNDS`.
+    pub max_rounds: usize,
 }
 
 impl Worker<'_> {
@@ -54,7 +58,7 @@ impl Worker<'_> {
         let mut outcome = Outcome::default();
         let tools = self.registry.specs();
 
-        for round in 1..=MAX_ROUNDS {
+        for round in 1..=self.max_rounds {
             let req = Request {
                 messages: messages.clone(),
                 tools: tools.clone(),
@@ -106,13 +110,13 @@ impl Worker<'_> {
                 });
             }
         }
-        Err(WorkerError::TooManyRounds(MAX_ROUNDS))
+        Err(WorkerError::TooManyRounds(self.max_rounds))
     }
 
     /// One model turn, forwarding its stream to the screen.
     async fn turn(&self, req: &Request) -> Result<crate::lm::Reply, WorkerError> {
-        self.emit(AgentEvent::TurnStart { role: Role::Worker })
-            .await;
+        let role = self.role;
+        self.emit(AgentEvent::TurnStart { role }).await;
         let began = Instant::now();
         let (tx, mut rx) = mpsc::channel::<StreamEvent>(256);
         let events = self.events.clone();
@@ -122,14 +126,8 @@ impl Worker<'_> {
         let forward = tokio::spawn(async move {
             while let Some(evt) = rx.recv().await {
                 let out = match evt {
-                    StreamEvent::Reasoning(text) => AgentEvent::Reasoning {
-                        role: Role::Worker,
-                        text,
-                    },
-                    StreamEvent::Text(text) => AgentEvent::Text {
-                        role: Role::Worker,
-                        text,
-                    },
+                    StreamEvent::Reasoning(text) => AgentEvent::Reasoning { role, text },
+                    StreamEvent::Text(text) => AgentEvent::Text { role, text },
                     StreamEvent::ToolCall(_) => continue, // reported as ToolStart once it runs
                 };
                 if events.send(out).await.is_err() {
@@ -151,7 +149,7 @@ impl Worker<'_> {
             Err(e) => return Err(e.into()),
         };
         self.emit(AgentEvent::TurnEnd {
-            role: Role::Worker,
+            role,
             usage: reply.usage,
             seconds: began.elapsed().as_secs_f32(),
         })
@@ -271,6 +269,8 @@ mod tests {
             events,
             cancel: CancellationToken::new(),
             allowed: HashSet::new(),
+            role: Role::Worker,
+            max_rounds: MAX_ROUNDS,
         };
         let mut messages = vec![
             Message::System("sys".into()),
@@ -312,6 +312,9 @@ mod tests {
                 AgentEvent::ToolDone { ok: false, .. } => "fail",
                 AgentEvent::TurnEnd { .. } => "end",
                 AgentEvent::Reasoning { .. } => "think",
+                AgentEvent::Phase { .. } | AgentEvent::Plan { .. } | AgentEvent::Review { .. } => {
+                    "other"
+                }
             });
         }
         assert_eq!(
@@ -358,6 +361,8 @@ mod tests {
             events,
             cancel: CancellationToken::new(),
             allowed: HashSet::new(),
+            role: Role::Worker,
+            max_rounds: MAX_ROUNDS,
         };
         let mut messages = vec![Message::User("run it".into())];
         worker.run(&mut messages).await.unwrap();

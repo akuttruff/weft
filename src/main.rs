@@ -11,9 +11,10 @@ use clap::{Parser, Subcommand};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
-use weft::agent::worker::{Worker, WorkerError};
+use weft::agent::tandem::{Mode, Tandem};
+use weft::agent::worker::WorkerError;
 use weft::agent::{AgentEvent, Approver, Decision, Role, Yes, prompts};
-use weft::config::Config;
+use weft::config::{Config, PlanWhen};
 use weft::lm::chat::ChatModel;
 use weft::lm::raw::RawModel;
 use weft::lm::{Endpoint, Message, Request, StreamEvent, ToolCall, ToolSpec};
@@ -72,7 +73,7 @@ async fn main() -> Result<()> {
         }
         Some(Command::Run { task }) => {
             let mut session = Session::new(&config, args.yes, args.think)?;
-            session.run(task).await
+            session.run(task, Mode::Auto).await
         }
         Some(Command::Probe { question }) => probe(&config, question, args.think).await,
         Some(Command::Tool { name, args }) => tool(name, args).await,
@@ -82,7 +83,14 @@ async fn main() -> Result<()> {
 /// One conversation with the worker in one folder. Tasks given one after
 /// another share the conversation, so "now do the same for X" works.
 struct Session {
-    model: RawModel,
+    planner: ChatModel,
+    reviewer: ChatModel,
+    worker: RawModel,
+    worker_thinking: RawModel,
+    /// Use the thinking worker for the main work too (`--think`, `/think`).
+    think: bool,
+    when: PlanWhen,
+    review_rounds: u8,
     registry: Registry,
     ctx: Ctx,
     approver: Box<dyn Approver>,
@@ -92,10 +100,10 @@ struct Session {
 
 impl Session {
     fn new(config: &Config, yes: bool, think: bool) -> Result<Self> {
-        let endpoint = Endpoint {
+        let endpoint = |model: &str| Endpoint {
             url: config.lm_studio.url.clone(),
             api_token: config.lm_studio.api_token.clone(),
-            model: config.worker.model.clone(),
+            model: model.to_string(),
         };
         let approver: Box<dyn Approver> = if yes {
             Box::new(Yes)
@@ -103,7 +111,19 @@ impl Session {
             Box::new(Terminal)
         };
         Ok(Self {
-            model: RawModel::new(endpoint, think || config.worker.thinking),
+            planner: ChatModel::new(
+                endpoint(&config.planner.model),
+                Some(config.planner.plan_effort),
+            ),
+            reviewer: ChatModel::new(
+                endpoint(&config.planner.model),
+                Some(config.planner.review_effort),
+            ),
+            worker: RawModel::new(endpoint(&config.worker.model), false),
+            worker_thinking: RawModel::new(endpoint(&config.worker.model), true),
+            think: think || config.worker.thinking,
+            when: config.planner.when,
+            review_rounds: config.planner.review_rounds,
             registry: Registry::builtin(),
             ctx: Ctx {
                 root: std::env::current_dir()?,
@@ -117,8 +137,9 @@ impl Session {
     /// Read tasks from the terminal until `/quit` or Ctrl-D.
     async fn interactive(mut self) -> Result<()> {
         println!(
-            "\x1b[1mweft\x1b[0m · {} in {}\n\x1b[2m/think toggles the worker's thinking · /clear starts a fresh conversation · /quit leaves\x1b[0m\n",
-            self.model.endpoint.model,
+            "\x1b[1mweft\x1b[0m · {} plans and reviews · {} works · in {}\n\x1b[2m/plan <task> always plans first · /go <task> never does · /think toggles the worker's thinking · /clear starts a fresh conversation · /quit leaves\x1b[0m\n",
+            self.planner.endpoint.model,
+            self.worker.endpoint.model,
             self.ctx.root.display()
         );
         loop {
@@ -126,23 +147,40 @@ impl Session {
                 break;
             };
             let line = line.trim().to_string();
-            match line.as_str() {
+            let (command, rest) = match line.split_once(char::is_whitespace) {
+                Some((c, r)) if c.starts_with('/') => (c, r.trim()),
+                _ => (line.as_str(), ""),
+            };
+            match command {
                 "" => continue,
                 "/quit" | "/exit" | "/q" => break,
                 "/think" => {
-                    self.model.thinking = !self.model.thinking;
+                    self.think = !self.think;
                     println!(
                         "\x1b[2mthinking {}\x1b[0m",
-                        if self.model.thinking { "on" } else { "off" }
+                        if self.think { "on" } else { "off" }
                     );
                 }
                 "/clear" => {
                     self.messages.truncate(1);
                     println!("\x1b[2mfresh conversation\x1b[0m");
                 }
+                "/plan" | "/go" if rest.is_empty() => {
+                    println!("\x1b[2musage: {command} <task>\x1b[0m")
+                }
+                "/plan" | "/go" => {
+                    let mode = if command == "/plan" {
+                        Mode::Plan
+                    } else {
+                        Mode::Go
+                    };
+                    if let Err(e) = self.run(rest.to_string(), mode).await {
+                        println!("\x1b[31m{e:#}\x1b[0m");
+                    }
+                }
                 _ if line.starts_with('/') => println!("\x1b[2munknown command {line}\x1b[0m"),
                 _ => {
-                    if let Err(e) = self.run(line).await {
+                    if let Err(e) = self.run(line.clone(), Mode::Auto).await {
                         println!("\x1b[31m{e:#}\x1b[0m");
                     }
                 }
@@ -152,8 +190,8 @@ impl Session {
         Ok(())
     }
 
-    /// One task: run the worker on it and print what happens.
-    async fn run(&mut self, task: String) -> Result<()> {
+    /// One task through the tandem, printing what happens.
+    async fn run(&mut self, task: String, mode: Mode) -> Result<()> {
         let (events, rx) = tokio::sync::mpsc::channel::<AgentEvent>(256);
         let printer = tokio::spawn(print_events(rx));
         let cancel = CancellationToken::new();
@@ -165,20 +203,30 @@ impl Session {
             })
         };
 
-        let mut worker = Worker {
-            model: &self.model,
+        let worker: &dyn weft::agent::Model = if self.think {
+            &self.worker_thinking
+        } else {
+            &self.worker
+        };
+        let mut tandem = Tandem {
+            planner: &self.planner,
+            reviewer: &self.reviewer,
+            worker,
+            worker_thinking: &self.worker_thinking,
             registry: &self.registry,
             ctx: &self.ctx,
             approver: self.approver.as_ref(),
             events,
             cancel,
             allowed: std::mem::take(&mut self.allowed),
+            when: self.when,
+            review_rounds: self.review_rounds,
         };
-        self.messages.push(Message::User(task));
         let began = Instant::now();
-        let result = worker.run(&mut self.messages).await;
-        self.allowed = std::mem::take(&mut worker.allowed);
-        drop(worker);
+        let before = self.messages.len();
+        let result = tandem.run(&task, mode, &mut self.messages).await;
+        self.allowed = std::mem::take(&mut tandem.allowed);
+        drop(tandem);
         on_ctrl_c.abort();
         let _ = printer.await;
 
@@ -186,20 +234,28 @@ impl Session {
             Ok(o) => o,
             Err(WorkerError::Cancelled) => {
                 println!("\n\x1b[2mstopped\x1b[0m");
-                // The half-finished turn stays in the conversation only if it is whole.
-                if matches!(self.messages.last(), Some(Message::User(_))) {
+                // Keep only whole turns: drop a trailing user message with no answer.
+                if matches!(self.messages.last(), Some(Message::User(_)))
+                    && self.messages.len() > before
+                {
                     self.messages.pop();
                 }
                 return Ok(());
             }
             Err(e) => return Err(e.into()),
         };
+        let review = match (outcome.reviews.last(), outcome.fixes_pending) {
+            (None, _) => String::new(),
+            (Some(_), true) => " · review: fixes still pending".to_string(),
+            (Some((true, _)), false) => " · review: approved".to_string(),
+            (Some((false, _)), false) => " · review: not approved".to_string(),
+        };
         println!(
-            "\n\x1b[2m{} rounds · {:.0}s · {} prompt + {} completion tokens · touched: {}\x1b[0m",
+            "\n\x1b[2m{} rounds · {:.0}s · planner {} · worker {} tokens · touched: {}{review}\x1b[0m",
             outcome.rounds,
             began.elapsed().as_secs_f32(),
-            outcome.usage.prompt_tokens,
-            outcome.usage.completion_tokens,
+            outcome.planner_usage.prompt_tokens + outcome.planner_usage.completion_tokens,
+            outcome.worker_usage.prompt_tokens + outcome.worker_usage.completion_tokens,
             if outcome.touched.is_empty() {
                 "nothing".to_string()
             } else {
@@ -255,6 +311,54 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
     while let Some(evt) = rx.recv().await {
         match evt {
             AgentEvent::TurnStart { .. } => {}
+            AgentEvent::Phase { name } => {
+                if dim {
+                    print!("\x1b[0m");
+                    dim = false;
+                }
+                if !at_line_start {
+                    println!();
+                }
+                println!("\x1b[35m✻\x1b[0m \x1b[1m{name}\x1b[0m");
+                at_line_start = true;
+            }
+            // The planner's and reviewer's answers arrive whole as Plan and
+            // Review; their streamed text is not printed twice.
+            AgentEvent::Text {
+                role: Role::Planner,
+                ..
+            } => {}
+            AgentEvent::Plan { text } => {
+                if dim {
+                    print!("\x1b[0m");
+                    dim = false;
+                }
+                if !at_line_start {
+                    println!();
+                }
+                for line in text.lines() {
+                    println!("  \x1b[36m│\x1b[0m {line}");
+                }
+                at_line_start = true;
+            }
+            AgentEvent::Review { approved, text } => {
+                if dim {
+                    print!("\x1b[0m");
+                    dim = false;
+                }
+                if !at_line_start {
+                    println!();
+                }
+                if approved {
+                    println!("  \x1b[32m✔ approved\x1b[0m \x1b[2m{text}\x1b[0m");
+                } else {
+                    println!("  \x1b[33m✗ fixes requested\x1b[0m");
+                    for line in text.lines() {
+                        println!("    {line}");
+                    }
+                }
+                at_line_start = true;
+            }
             AgentEvent::Reasoning { text, .. } => {
                 if !dim {
                     print!("\x1b[2m");

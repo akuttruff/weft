@@ -77,6 +77,22 @@ impl Registry {
         }
     }
 
+    /// Looking only: what the planner gets.
+    pub fn read_only() -> Self {
+        Self {
+            tools: vec![
+                Box::new(files::ReadFile),
+                Box::new(files::ListFiles),
+                Box::new(search::Search),
+            ],
+        }
+    }
+
+    /// No tools: a single question and answer.
+    pub fn empty() -> Self {
+        Self { tools: vec![] }
+    }
+
     pub fn specs(&self) -> Vec<ToolSpec> {
         self.tools.iter().map(|t| t.spec()).collect()
     }
