@@ -308,9 +308,29 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
     let mut out = std::io::stdout();
     let mut dim = false;
     let mut at_line_start = true;
+    // The planner's thinking is long and not worth reading live: it shows as
+    // one line that ticks, written over in place, and is wiped when the turn ends.
+    let mut ticker: Option<(Instant, usize)> = None;
     while let Some(evt) = rx.recv().await {
         match evt {
+            AgentEvent::TurnStart {
+                role: Role::Planner,
+            } => ticker = Some((Instant::now(), 0)),
             AgentEvent::TurnStart { .. } => {}
+            AgentEvent::Reasoning {
+                role: Role::Planner,
+                text,
+            } => {
+                if let Some((since, chars)) = &mut ticker {
+                    *chars += text.len();
+                    print!(
+                        "\r\x1b[2K\x1b[2m  ✻ planner thinking · {}s · ~{} tokens\x1b[0m",
+                        since.elapsed().as_secs(),
+                        *chars / 4
+                    );
+                    at_line_start = false;
+                }
+            }
             AgentEvent::Phase { name } => {
                 if dim {
                     print!("\x1b[0m");
@@ -409,6 +429,10 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
                 usage,
                 seconds,
             } => {
+                if ticker.take().is_some() {
+                    print!("\r\x1b[2K");
+                    at_line_start = true;
+                }
                 if dim {
                     print!("\x1b[0m");
                     dim = false;
