@@ -1,6 +1,6 @@
 # <img src="docs/icon.png" width="32" alt=""> Weft
 
-A coding agent for the terminal that runs two local models in tandem through
+A coding agent for the terminal that runs local models in tandem through
 [LM Studio](https://lmstudio.ai), in Rust.
 
 - **The planner** (a dense model at medium reasoning effort) writes a short plan
