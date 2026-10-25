@@ -7,6 +7,7 @@
 //! pieces (a tool call, the plan, an answer) are pushed above it with
 //! `insert_before` and never redrawn again.
 
+pub mod diff;
 mod view;
 
 use std::sync::Arc;
@@ -121,8 +122,9 @@ struct App {
     context: u32,
     tasks: usize,
     flush_failed: bool,
-    /// The tool whose result is next, for the summary line.
-    last_tool: String,
+    /// The tool call whose result is next: its name for the summary line, its
+    /// arguments for the diff under an edit.
+    last_tool: (String, serde_json::Value),
 }
 
 pub async fn run(session: Arc<Session>, yes: bool, think: bool) -> Result<()> {
@@ -167,7 +169,7 @@ async fn event_loop(
         context: 0,
         tasks: 0,
         flush_failed: false,
-        last_tool: String::new(),
+        last_tool: (String::new(), serde_json::Value::Null),
     };
     let (tx, mut rx) = mpsc::channel::<UiMsg>(512);
     let mut keys = EventStream::new();
@@ -322,14 +324,32 @@ impl App {
                 }
             }
             AgentEvent::Text { .. } => {}
-            AgentEvent::ToolStart { summary, name, .. } => {
-                self.last_tool = name;
+            AgentEvent::ToolStart {
+                summary,
+                name,
+                args,
+                ..
+            } => {
+                self.last_tool = (name, args);
                 self.flush_text();
                 self.push(view::tool_line(&summary));
             }
             AgentEvent::ToolDone { ok, output, .. } => {
-                let line = view::result_line(ok, &output, &self.last_tool);
-                self.push_with(line, vec![Span::raw("    ")])
+                let (tool, args) = &self.last_tool;
+                let line = view::result_line(ok, &output, tool);
+                // An edit or a new file is shown as the code it changed.
+                let shown = if ok {
+                    diff::rows(tool, args, &output)
+                } else {
+                    None
+                };
+                self.push_with(line, vec![Span::raw("    ")]);
+                if let Some((rows, hidden)) = shown {
+                    self.push_with(
+                        view::diff_lines(&rows, hidden),
+                        vec![Span::raw(view::DIFF_INDENT)],
+                    );
+                }
             }
             AgentEvent::Plan { text } => self.push_with(
                 view::plan_lines(&text),

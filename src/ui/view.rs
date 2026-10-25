@@ -5,6 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
+use super::diff::{Kind, Row};
 use crate::lm::Usage;
 
 /// `> what the user typed`
@@ -75,6 +76,37 @@ pub fn result_line(ok: bool, output: &str, tool: &str) -> Vec<Line<'static>> {
         Span::styled("  ⎿ ", style),
         Span::styled(summary, style),
     ])]
+}
+
+/// What a wrapped diff line's continuation starts with: past the number and the sign.
+pub const DIFF_INDENT: &str = "           ";
+
+/// The code an edit changed, under its result line: `    12 -  old` in red,
+/// `    12 +  new` in green, unchanged lines plain, numbers dim.
+pub fn diff_lines(rows: &[Row], hidden: usize) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    for row in rows {
+        let (sign, style) = match row.kind {
+            Kind::Removed => ("-", Style::new().fg(Color::Red)),
+            Kind::Added => ("+", Style::new().fg(Color::Green)),
+            Kind::Same => (" ", Style::new()),
+        };
+        out.push(Line::from(vec![
+            Span::styled(format!("    {:>4} ", row.line), Style::new().dim()),
+            Span::styled(format!("{sign} "), style),
+            Span::styled(row.text.replace('\t', "    "), style),
+        ]));
+    }
+    if hidden > 0 {
+        out.push(Line::from(Span::styled(
+            format!(
+                "{DIFF_INDENT}… {hidden} more line{}",
+                if hidden == 1 { "" } else { "s" }
+            ),
+            Style::new().dim(),
+        )));
+    }
+    out
 }
 
 /// The plan, in a cyan gutter.
@@ -242,6 +274,37 @@ mod tests {
             "read_file",
         );
         assert_eq!(l[0].spans[1].content, "Read 2 lines");
+    }
+
+    #[test]
+    fn diff_lines_carry_number_sign_and_colour() {
+        let rows = [
+            Row {
+                line: 12,
+                kind: Kind::Removed,
+                text: "\tlet a = 1;".into(),
+            },
+            Row {
+                line: 12,
+                kind: Kind::Added,
+                text: "let a = 2;".into(),
+            },
+        ];
+        let lines = diff_lines(&rows, 3);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(
+            text,
+            [
+                "      12 -     let a = 1;",
+                "      12 + let a = 2;",
+                "           … 3 more lines"
+            ]
+        );
+        assert_eq!(lines[0].spans[2].style.fg, Some(Color::Red));
+        assert_eq!(lines[1].spans[2].style.fg, Some(Color::Green));
     }
 }
 

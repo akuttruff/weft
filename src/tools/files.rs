@@ -240,10 +240,14 @@ impl Tool for EditFile {
                 "old_string was not found in {shown}. Read the file again and copy the passage exactly."
             ))),
             1 => {
+                // The line the passage starts on, so the result reads `path:line`
+                // and the screen can number the diff it shows.
+                let at = text.find(old).unwrap_or(0);
+                let line = text[..at].matches('\n').count() + 1;
                 let updated = text.replacen(old, new, 1);
                 std::fs::write(&path, &updated)?;
                 let (added, removed) = line_delta(old, new);
-                Ok(format!("edited {shown} (+{added} −{removed})"))
+                Ok(format!("edited {shown}:{line} (+{added} −{removed})"))
             }
             n => Err(ToolError::Failed(format!(
                 "old_string appears {n} times in {shown}; include more surrounding lines so it is unique."
@@ -337,7 +341,7 @@ mod tests {
             .run(&json!({"path": "a.rs", "old_string": "fn b() {}", "new_string": "fn b() {\n    1\n}"}), &ctx)
             .await
             .unwrap();
-        assert_eq!(out, "edited a.rs (+3 −1)");
+        assert_eq!(out, "edited a.rs:2 (+3 −1)");
         assert_eq!(
             std::fs::read_to_string(ctx.root.join("a.rs")).unwrap(),
             "fn a() {}\nfn b() {\n    1\n}\nfn c() {}\n"

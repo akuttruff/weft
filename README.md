@@ -27,7 +27,9 @@ test for that":
 
 ![a weft session: a change, then a test for it](docs/weft.png)
 
-Each `⏺` line is a tool call with the first line of its result under it. The
+Each `⏺` line is a tool call with the first line of its result under it. An
+edit or a new file shows the code itself: the lines removed in red and added
+in green, numbered as they sit in the file, folded after forty lines. The
 plan sits in a cyan gutter. The second task is understood against the first,
 because the planner is told what the session did before. Edits, new files and
 shell commands ask first, and one key answers:
@@ -119,7 +121,7 @@ included. `pkill`, `killall` and force pushes are never run.
 | `read_file` | Numbered lines, up to 200 at a time |
 | `list_files` | Folder listing, honours `.gitignore` |
 | `search` | Regex over the project, `path:line: text`, capped at 100 matches |
-| `edit_file` | Replace one exact passage; must match exactly once |
+| `edit_file` | Replace one exact passage; must match exactly once; reports `path:line` |
 | `write_file` | New files only |
 | `bash` | Runs in the project root, timeout, last 200 lines of output |
 

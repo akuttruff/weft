@@ -83,6 +83,7 @@ impl Worker<'_> {
                     id: call.id.clone(),
                     name: call.name.clone(),
                     summary,
+                    args: call.arguments.clone(),
                 })
                 .await;
 
@@ -293,7 +294,7 @@ mod tests {
             matches!(&seen[1][3], Message::Tool { call_id, content } if call_id == "c1" && content.starts_with("1\thello"))
         );
         assert!(
-            matches!(&seen[1][4], Message::Tool { content, .. } if content == "edited a.txt (+1 −1)")
+            matches!(&seen[1][4], Message::Tool { content, .. } if content == "edited a.txt:1 (+1 −1)")
         );
         assert_eq!(messages.len(), 6, "the conversation was extended in place");
         assert!(

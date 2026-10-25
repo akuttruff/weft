@@ -63,11 +63,13 @@ pub enum AgentEvent {
         role: Role,
         text: String,
     },
-    /// A tool is about to run (or is waiting for approval).
+    /// A tool is about to run (or is waiting for approval). `args` are the
+    /// call's arguments, so the screen can show an edit as a diff.
     ToolStart {
         id: String,
         name: String,
         summary: String,
+        args: serde_json::Value,
     },
     /// The tool finished; `output` is what the model will see.
     ToolDone {

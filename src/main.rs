@@ -22,6 +22,7 @@ use weft::lm::raw::RawModel;
 use weft::lm::{Endpoint, Message, Request, StreamEvent, ToolCall, ToolSpec};
 use weft::session::Session;
 use weft::tools::{Ctx, Registry};
+use weft::ui::diff;
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -181,6 +182,8 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
     // The planner's thinking is long and not worth reading live: it shows as
     // one line that ticks, written over in place, and is wiped when the turn ends.
     let mut ticker: Option<(Instant, usize)> = None;
+    // The call whose result is next, so an edit can be printed as a diff.
+    let mut last_call = (String::new(), json!(null));
     while let Some(evt) = rx.recv().await {
         match evt {
             AgentEvent::TurnStart {
@@ -265,7 +268,13 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
                 print!("{text}");
                 at_line_start = text.ends_with('\n');
             }
-            AgentEvent::ToolStart { summary, .. } => {
+            AgentEvent::ToolStart {
+                summary,
+                name,
+                args,
+                ..
+            } => {
+                last_call = (name, args);
                 if dim {
                     print!("\x1b[0m");
                     dim = false;
@@ -292,6 +301,9 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
                 };
                 let mark = if ok { "\x1b[2m" } else { "\x1b[31m" };
                 println!("\n  {mark}⎿ {first}{more}\x1b[0m");
+                if ok {
+                    print_diff(&last_call.0, &last_call.1, &output);
+                }
                 at_line_start = true;
             }
             AgentEvent::TurnEnd {
@@ -347,10 +359,35 @@ async fn tool(name: String, args: Option<String>) -> Result<()> {
         println!("\x1b[2m(would ask to {what})\x1b[0m");
     }
     match registry.run(&call, &ctx).await {
-        Ok(out) => print!("{out}"),
+        Ok(out) => {
+            println!("{}", out.trim_end());
+            print_diff(&call.name, &call.arguments, &out);
+        }
         Err(e) => println!("error: {e}"),
     }
     Ok(())
+}
+
+/// The code an edit changed, in plain ANSI, the way the screen shows it.
+fn print_diff(tool: &str, args: &serde_json::Value, output: &str) {
+    let Some((rows, hidden)) = diff::rows(tool, args, output) else {
+        return;
+    };
+    for row in &rows {
+        let (sign, colour) = match row.kind {
+            diff::Kind::Removed => ("-", "\x1b[31m"),
+            diff::Kind::Added => ("+", "\x1b[32m"),
+            diff::Kind::Same => (" ", ""),
+        };
+        println!(
+            "\x1b[2m    {:>4} \x1b[0m{colour}{sign} {}\x1b[0m",
+            row.line,
+            row.text.replace('\t', "    ")
+        );
+    }
+    if hidden > 0 {
+        println!("\x1b[2m           … {hidden} more lines\x1b[0m");
+    }
 }
 
 async fn probe(config: &Config, question: Option<String>, think: bool) -> Result<()> {
