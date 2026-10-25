@@ -112,8 +112,9 @@ struct App {
     quit_armed: bool,
     quit: bool,
     frame: usize,
-    /// Lines waiting to be pushed above the live area.
-    out: Vec<Vec<Line<'static>>>,
+    /// Lines waiting to be pushed above the live area, each with the prefix
+    /// its continuation lines take when wrapped.
+    out: Vec<(Vec<Line<'static>>, Vec<Span<'static>>)>,
     planner_usage: Usage,
     worker_usage: Usage,
     /// The worker's last prompt size: how full its context is.
@@ -209,8 +210,13 @@ impl App {
     // ---- Transcript -----------------------------------------------------------
 
     fn push(&mut self, lines: Vec<Line<'static>>) {
+        self.push_with(lines, vec![Span::raw("  ")]);
+    }
+
+    /// Lines whose wrapped continuations should start with `cont` (a gutter, an indent).
+    fn push_with(&mut self, lines: Vec<Line<'static>>, cont: Vec<Span<'static>>) {
         if !lines.is_empty() {
-            self.out.push(lines);
+            self.out.push((lines, cont));
         }
     }
 
@@ -219,9 +225,15 @@ impl App {
     /// cursor) loses those lines but keeps the session; the error is shown once.
     fn flush(&mut self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         let width = terminal.size()?.width.max(10);
-        for lines in std::mem::take(&mut self.out) {
-            let para = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
-            let height = para.line_count(width).max(1) as u16;
+        for (lines, cont) in std::mem::take(&mut self.out) {
+            // Wrapped here, with hanging indents, so continuation lines keep
+            // their gutter instead of starting at the left edge.
+            let wrapped: Vec<Line<'static>> = lines
+                .iter()
+                .flat_map(|l| view::wrap_hanging(l, width as usize, &cont))
+                .collect();
+            let height = wrapped.len().max(1) as u16;
+            let para = Paragraph::new(Text::from(wrapped));
             if let Err(e) = terminal.insert_before(height, |buf| para.render(buf.area, buf))
                 && !self.flush_failed
             {
@@ -242,8 +254,10 @@ impl App {
             let first = !r.answer_open;
             r.answer_open = false;
             if !text.trim().is_empty() {
-                self.out
-                    .push(vec![view::answer_line(text.trim_end(), first)]);
+                self.out.push((
+                    vec![view::answer_line(text.trim_end(), first)],
+                    vec![Span::raw("  ")],
+                ));
             }
         }
     }
@@ -302,7 +316,8 @@ impl App {
                         }
                         let first = !r.answer_open;
                         r.answer_open = true;
-                        self.out.push(vec![view::answer_line(line, first)]);
+                        self.out
+                            .push((vec![view::answer_line(line, first)], vec![Span::raw("  ")]));
                     }
                 }
             }
@@ -314,9 +329,12 @@ impl App {
             }
             AgentEvent::ToolDone { ok, output, .. } => {
                 let line = view::result_line(ok, &output, &self.last_tool);
-                self.push(line)
+                self.push_with(line, vec![Span::raw("    ")])
             }
-            AgentEvent::Plan { text } => self.push(view::plan_lines(&text)),
+            AgentEvent::Plan { text } => self.push_with(
+                view::plan_lines(&text),
+                vec![Span::styled("  │ ", Style::new().fg(Color::Cyan))],
+            ),
             AgentEvent::Review { approved, text } => self.push(view::review_lines(approved, &text)),
             AgentEvent::TurnEnd { role, usage, .. } => {
                 match role {

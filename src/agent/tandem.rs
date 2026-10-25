@@ -587,8 +587,18 @@ mod tests {
 
         // The worker saw the task with the plan, then the reviewer's list.
         let seen = worker.seen.lock().unwrap().clone();
-        assert_eq!(seen[0], "make it two", "triage saw the bare task");
-        assert!(seen[1].starts_with("make it two\n\n") && seen[1].contains("## Plan"));
+        assert!(
+            seen[0].starts_with("## Project\n") && seen[0].ends_with("## Task\nmake it two"),
+            "triage saw the project note and the task: {}",
+            seen[0]
+        );
+        assert!(
+            seen[1].starts_with("## Project\n")
+                && seen[1].contains("make it two\n\n")
+                && seen[1].contains("## Plan"),
+            "{}",
+            seen[1]
+        );
         let fix_seen = worker_thinking.seen.lock().unwrap().clone();
         assert!(
             fix_seen[0].starts_with(prompts::WORKER_FIX) && fix_seen[0].contains("three, not two")

@@ -3,6 +3,7 @@
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthChar;
 
 use crate::lm::Usage;
 
@@ -235,5 +236,135 @@ mod tests {
             "read_file",
         );
         assert_eq!(l[0].spans[1].content, "Read 2 lines");
+    }
+}
+
+/// Wrap one styled line to `width` columns with a hanging indent: the first
+/// visual line is kept as is, each continuation starts with `cont`. Breaks at
+/// the last space that fits, or mid-word when a word is wider than the line.
+pub fn wrap_hanging(
+    line: &Line<'static>,
+    width: usize,
+    cont: &[Span<'static>],
+) -> Vec<Line<'static>> {
+    let width = width.max(8);
+    let cont_width: usize = cont
+        .iter()
+        .map(|s| {
+            s.content
+                .chars()
+                .map(|c| c.width().unwrap_or(0))
+                .sum::<usize>()
+        })
+        .sum();
+    // Flatten to (char, style) so breaks can fall anywhere.
+    let cells: Vec<(char, Style)> = line
+        .spans
+        .iter()
+        .flat_map(|s| s.content.chars().map(move |c| (c, s.style)))
+        .collect();
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut start = 0;
+    let mut first = true;
+    while start < cells.len() || first {
+        let avail = if first {
+            width
+        } else {
+            width.saturating_sub(cont_width).max(4)
+        };
+        // Walk until the width is used up, remembering the last space.
+        let mut used = 0;
+        let mut end = start;
+        let mut last_space = None;
+        while end < cells.len() {
+            let w = cells[end].0.width().unwrap_or(0);
+            if used + w > avail {
+                break;
+            }
+            if cells[end].0 == ' ' {
+                last_space = Some(end);
+            }
+            used += w;
+            end += 1;
+        }
+        let mut cut = end;
+        if end < cells.len()
+            && let Some(sp) = last_space
+            && sp > start
+        {
+            cut = sp;
+        }
+        let mut spans: Vec<Span<'static>> = if first { Vec::new() } else { cont.to_vec() };
+        let mut buf = String::new();
+        let mut style: Option<Style> = None;
+        for &(c, st) in &cells[start..cut] {
+            if style != Some(st) {
+                if !buf.is_empty() {
+                    spans.push(Span::styled(
+                        std::mem::take(&mut buf),
+                        style.unwrap_or_default(),
+                    ));
+                }
+                style = Some(st);
+            }
+            buf.push(c);
+        }
+        if !buf.is_empty() {
+            spans.push(Span::styled(buf, style.unwrap_or_default()));
+        }
+        out.push(Line::from(spans));
+        // Skip the space the line broke on. A cut that made no progress (one
+        // cell wider than the line) still moves on, so this never loops forever.
+        let next = if cut < cells.len() && cells[cut].0 == ' ' {
+            cut + 1
+        } else {
+            cut
+        };
+        start = if next > start { next } else { start + 1 };
+        first = false;
+    }
+    out
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::*;
+
+    fn text(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn continuations_carry_the_gutter() {
+        let line = Line::from(vec![
+            Span::styled("  │ ", Style::new()),
+            Span::raw("one two three four five six"),
+        ]);
+        let cont = vec![Span::styled("  │ ", Style::new())];
+        assert_eq!(
+            text(&wrap_hanging(&line, 16, &cont)),
+            ["  │ one two", "  │ three four", "  │ five six"]
+        );
+    }
+
+    #[test]
+    fn long_words_break_and_short_lines_pass_through() {
+        let line = Line::from("abcdefghijklmnop");
+        assert_eq!(
+            text(&wrap_hanging(&line, 8, &[Span::raw("  ")])),
+            ["abcdefgh", "  ijklmn", "  op"]
+        );
+        let line = Line::from("short");
+        assert_eq!(text(&wrap_hanging(&line, 80, &[])), ["short"]);
+        let line = Line::from("");
+        assert_eq!(text(&wrap_hanging(&line, 80, &[])), [""]);
     }
 }
