@@ -72,6 +72,11 @@ it read stay in its context and are thrown away, so the worker's window holds
 only the answer. The models call it themselves; you never ask for it. It shows
 as one `⏺ Scout …` line.
 
+A small model makes a good scout: a 9B answers in 5–15 seconds where the 122B
+takes 20–30. Small models also sometimes cite a file they never opened, so weft
+checks the paths in every answer against the folder and sends the scout back
+once when one is missing; if it still is, the answer carries a note saying so.
+
 ## Two routes to one server
 
 LM Studio exposes reasoning-effort levels only for models whose template
@@ -107,8 +112,8 @@ model = "qwen3.5-122b-a10b"
 thinking = false            # the planner carries the reasoning; fix rounds think anyway
 
 [scout]                     # optional: the model that answers "where is X?"
-# model = "qwen/qwen3.8-27b"  # default: the worker's, thinking off
-effort = "low"              # used when `model` is one on the chat route
+# model = "qwen/qwen3.5-9b"   # default: the worker's; raw route, thinking off
+# effort = "low"              # only for a model that honours reasoning_effort
 EOF
 chmod 600 ~/.config/weft/config.toml
 ```

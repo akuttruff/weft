@@ -52,7 +52,8 @@ impl Session {
         };
         // The scout runs on the worker's model by default: the fast one, on the
         // raw route with thinking off. A dense model at low effort took close to
-        // three minutes on one question. Another model goes on the chat route.
+        // three minutes on one question. Another model takes the raw route too
+        // unless the config gives it an effort, which only the chat route carries.
         let scout_model = config
             .scout
             .model
@@ -60,13 +61,9 @@ impl Session {
             .unwrap_or_else(|| config.worker.model.clone());
         // One scout each, so the planner's and the worker's tool sets are independent.
         let scout = || {
-            let model: Box<dyn Model> = if scout_model == config.worker.model {
-                Box::new(RawModel::new(endpoint(&scout_model), false))
-            } else {
-                Box::new(ChatModel::new(
-                    endpoint(&scout_model),
-                    Some(config.scout.effort),
-                ))
+            let model: Box<dyn Model> = match config.scout.effort {
+                Some(effort) => Box::new(ChatModel::new(endpoint(&scout_model), Some(effort))),
+                None => Box::new(RawModel::new(endpoint(&scout_model), false)),
             };
             Box::new(Scout::new(model)) as Box<dyn crate::tools::Tool>
         };

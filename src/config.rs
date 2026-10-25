@@ -68,23 +68,16 @@ pub struct Worker {
 
 /// The model that answers the scout's questions: the worker's by default,
 /// thinking off, because finding a file wants speed, not deep thought.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Scout {
     /// Default: the worker's model.
     #[serde(default)]
     pub model: Option<String>,
-    /// The reasoning effort when `model` names a model on the chat route.
-    #[serde(default = "Effort::low")]
-    pub effort: Effort,
-}
-
-impl Default for Scout {
-    fn default() -> Self {
-        Self {
-            model: None,
-            effort: Effort::Low,
-        }
-    }
+    /// Set this for a model that honours `reasoning_effort` (the chat route).
+    /// Left out, the scout's model runs on the raw route with thinking off,
+    /// like the worker.
+    #[serde(default)]
+    pub effort: Option<Effort>,
 }
 
 fn default_url() -> String {
@@ -133,6 +126,6 @@ model = "qwen3.5-122b-a10b"
         assert_eq!(config.planner.review_rounds, 1);
         assert!(!config.worker.thinking);
         assert_eq!(config.scout.model, None);
-        assert_eq!(config.scout.effort, Effort::Low);
+        assert_eq!(config.scout.effort, None);
     }
 }

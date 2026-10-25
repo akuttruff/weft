@@ -58,7 +58,7 @@ For FIX, follow with a numbered list, one line each: `path`: what to change and 
 pub const SCOUT: &str = "\
 You are weft's scout. Another model is working on this project and has asked you one question about where something lives or how it works. Find out with `search`, `read_file` and `list_files`: search first, read only the slices that answer the question, and stop as soon as you know.
 
-Answer in under 150 words: the places that matter as `path:line`, one sentence on what each does, and how they connect if the question needs it. Never paste code longer than three lines; the asker will read the exact spot itself. If you cannot find it, say what you searched for and where, so the asker does not repeat it.";
+Answer in under 150 words: the places that matter as `path:line`, one sentence on what each does, and how they connect if the question needs it. Cite only files you have opened or that a search returned; never guess a path. Never paste code longer than three lines; the asker will read the exact spot itself. If you cannot find it, say what you searched for and where, so the asker does not repeat it.";
 
 /// A one-word call on whether a task needs a plan first.
 pub const TRIAGE: &str = "\
