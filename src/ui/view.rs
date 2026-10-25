@@ -80,7 +80,8 @@ pub fn result_line(ok: bool, output: &str, tool: &str) -> Vec<Line<'static>> {
 /// The plan, in a cyan gutter.
 pub fn plan_lines(text: &str) -> Vec<Line<'static>> {
     let mut out = Vec::new();
-    for l in text.lines() {
+    // Code fences carry nothing on a terminal; the code between them stays.
+    for l in text.lines().filter(|l| !l.trim_start().starts_with("```")) {
         let mut spans = vec![Span::styled("  │ ", Style::new().fg(Color::Cyan))];
         spans.extend(inline(
             l,
@@ -114,6 +115,11 @@ pub fn review_lines(approved: bool, text: &str) -> Vec<Line<'static>> {
 
 /// One line of the answer: `⏺ ` on the first line of a block, two spaces after.
 pub fn answer_line(l: &str, first: bool) -> Line<'static> {
+    let l = if l.trim_start().starts_with("```") {
+        ""
+    } else {
+        l
+    };
     let mut spans = vec![Span::styled(
         if first { "⏺ " } else { "  " },
         Style::new().fg(Color::White),
