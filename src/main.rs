@@ -1,16 +1,17 @@
-//! `weft`: for now, `weft probe` tries both models against LM Studio.
+//! `weft`: run it in a repository to start a session; `weft run "task"` does
+//! one task and exits. `probe` and `tool` are for poking at the pieces.
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use clap::{Parser, Subcommand};
 use serde_json::json;
-
-use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
-use weft::agent::worker::Worker;
+
+use weft::agent::worker::{Worker, WorkerError};
 use weft::agent::{AgentEvent, Approver, Decision, Role, Yes, prompts};
 use weft::config::Config;
 use weft::lm::chat::ChatModel;
@@ -25,29 +26,26 @@ struct Args {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
+    /// Approve every tool call without asking
+    #[arg(long, short = 'y', global = true)]
+    yes: bool,
+
+    /// Let the worker think before each step
+    #[arg(long, global = true)]
+    think: bool,
+
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Give the worker one task in the current folder and exit when it is done.
+    Run { task: String },
     /// Ask both models one question and show how each answers.
     Probe {
         /// The question [default: a small one that invites a tool call]
         question: Option<String>,
-        /// Let the worker think too
-        #[arg(long)]
-        think: bool,
-    },
-    /// Give the worker one task in the current folder and watch it work.
-    Run {
-        task: String,
-        /// Approve every tool call without asking
-        #[arg(long, short = 'y')]
-        yes: bool,
-        /// Let the worker think before each step
-        #[arg(long)]
-        think: bool,
     },
     /// Run one tool by hand, as the worker would: `weft tool search '{"pattern":"fn main"}'`.
     Tool {
@@ -67,9 +65,165 @@ async fn main() -> Result<()> {
     let config = Config::load(&config_file)?;
 
     match args.command {
-        Command::Probe { question, think } => probe(&config, question, think).await,
-        Command::Tool { name, args } => tool(name, args).await,
-        Command::Run { task, yes, think } => run_task(&config, task, yes, think).await,
+        None => {
+            Session::new(&config, args.yes, args.think)?
+                .interactive()
+                .await
+        }
+        Some(Command::Run { task }) => {
+            let mut session = Session::new(&config, args.yes, args.think)?;
+            session.run(task).await
+        }
+        Some(Command::Probe { question }) => probe(&config, question, args.think).await,
+        Some(Command::Tool { name, args }) => tool(name, args).await,
+    }
+}
+
+/// One conversation with the worker in one folder. Tasks given one after
+/// another share the conversation, so "now do the same for X" works.
+struct Session {
+    model: RawModel,
+    registry: Registry,
+    ctx: Ctx,
+    approver: Box<dyn Approver>,
+    allowed: std::collections::HashSet<String>,
+    messages: Vec<Message>,
+}
+
+impl Session {
+    fn new(config: &Config, yes: bool, think: bool) -> Result<Self> {
+        let endpoint = Endpoint {
+            url: config.lm_studio.url.clone(),
+            api_token: config.lm_studio.api_token.clone(),
+            model: config.worker.model.clone(),
+        };
+        let approver: Box<dyn Approver> = if yes {
+            Box::new(Yes)
+        } else {
+            Box::new(Terminal)
+        };
+        Ok(Self {
+            model: RawModel::new(endpoint, think || config.worker.thinking),
+            registry: Registry::builtin(),
+            ctx: Ctx {
+                root: std::env::current_dir()?,
+            },
+            approver,
+            allowed: Default::default(),
+            messages: vec![Message::System(prompts::WORKER.into())],
+        })
+    }
+
+    /// Read tasks from the terminal until `/quit` or Ctrl-D.
+    async fn interactive(mut self) -> Result<()> {
+        println!(
+            "\x1b[1mweft\x1b[0m · {} in {}\n\x1b[2m/think toggles the worker's thinking · /clear starts a fresh conversation · /quit leaves\x1b[0m\n",
+            self.model.endpoint.model,
+            self.ctx.root.display()
+        );
+        loop {
+            let Some(line) = read_line("\x1b[1m>\x1b[0m ").await else {
+                break;
+            };
+            let line = line.trim().to_string();
+            match line.as_str() {
+                "" => continue,
+                "/quit" | "/exit" | "/q" => break,
+                "/think" => {
+                    self.model.thinking = !self.model.thinking;
+                    println!(
+                        "\x1b[2mthinking {}\x1b[0m",
+                        if self.model.thinking { "on" } else { "off" }
+                    );
+                }
+                "/clear" => {
+                    self.messages.truncate(1);
+                    println!("\x1b[2mfresh conversation\x1b[0m");
+                }
+                _ if line.starts_with('/') => println!("\x1b[2munknown command {line}\x1b[0m"),
+                _ => {
+                    if let Err(e) = self.run(line).await {
+                        println!("\x1b[31m{e:#}\x1b[0m");
+                    }
+                }
+            }
+            println!();
+        }
+        Ok(())
+    }
+
+    /// One task: run the worker on it and print what happens.
+    async fn run(&mut self, task: String) -> Result<()> {
+        let (events, rx) = tokio::sync::mpsc::channel::<AgentEvent>(256);
+        let printer = tokio::spawn(print_events(rx));
+        let cancel = CancellationToken::new();
+        let on_ctrl_c = {
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                let _ = tokio::signal::ctrl_c().await;
+                cancel.cancel();
+            })
+        };
+
+        let mut worker = Worker {
+            model: &self.model,
+            registry: &self.registry,
+            ctx: &self.ctx,
+            approver: self.approver.as_ref(),
+            events,
+            cancel,
+            allowed: std::mem::take(&mut self.allowed),
+        };
+        self.messages.push(Message::User(task));
+        let began = Instant::now();
+        let result = worker.run(&mut self.messages).await;
+        self.allowed = std::mem::take(&mut worker.allowed);
+        drop(worker);
+        on_ctrl_c.abort();
+        let _ = printer.await;
+
+        let outcome = match result {
+            Ok(o) => o,
+            Err(WorkerError::Cancelled) => {
+                println!("\n\x1b[2mstopped\x1b[0m");
+                // The half-finished turn stays in the conversation only if it is whole.
+                if matches!(self.messages.last(), Some(Message::User(_))) {
+                    self.messages.pop();
+                }
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
+        };
+        println!(
+            "\n\x1b[2m{} rounds · {:.0}s · {} prompt + {} completion tokens · touched: {}\x1b[0m",
+            outcome.rounds,
+            began.elapsed().as_secs_f32(),
+            outcome.usage.prompt_tokens,
+            outcome.usage.completion_tokens,
+            if outcome.touched.is_empty() {
+                "nothing".to_string()
+            } else {
+                outcome.touched.join(", ")
+            }
+        );
+        Ok(())
+    }
+}
+
+/// A line from the terminal, or `None` at end of input (Ctrl-D) or Ctrl-C.
+async fn read_line(prompt: &str) -> Option<String> {
+    print!("{prompt}");
+    let _ = std::io::stdout().flush();
+    let read = tokio::task::spawn_blocking(|| {
+        let mut line = String::new();
+        match std::io::stdin().read_line(&mut line) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => Some(line),
+        }
+    });
+    tokio::select! {
+        line = read => line.ok().flatten(),
+        _ = tokio::signal::ctrl_c() => { println!(); None }
     }
 }
 
@@ -79,162 +233,102 @@ struct Terminal;
 #[async_trait]
 impl Approver for Terminal {
     async fn ask(&self, what: &str) -> Decision {
-        let what = what.to_string();
-        // Rust: reading stdin blocks the thread, so it goes to a blocking task
-        // rather than stalling the async runtime that is also drawing output.
-        tokio::task::spawn_blocking(move || {
-            print!("\n\x1b[33m?\x1b[0m Allow weft to {what}?  [y] once  [a] always this session  [n] no  ");
-            let _ = std::io::stdout().flush();
-            let mut line = String::new();
-            let _ = std::io::stdin().read_line(&mut line);
-            match line.trim() {
-                "y" | "yes" => Decision::Once,
-                "a" | "always" => Decision::Always,
-                _ => Decision::No,
-            }
-        })
-        .await
-        .unwrap_or(Decision::No)
+        let prompt = format!(
+            "\n\x1b[33m?\x1b[0m Allow weft to {what}?  [y] once  [a] always this session  [n] no  "
+        );
+        // Rust: reading stdin blocks the thread, so `read_line` sends it to a
+        // blocking task rather than stalling the runtime that is drawing output.
+        match read_line(&prompt).await.as_deref().map(str::trim) {
+            Some("y") | Some("yes") => Decision::Once,
+            Some("a") | Some("always") => Decision::Always,
+            _ => Decision::No,
+        }
     }
 }
 
-async fn run_task(config: &Config, task: String, yes: bool, think: bool) -> Result<()> {
-    let endpoint = Endpoint {
-        url: config.lm_studio.url.clone(),
-        api_token: config.lm_studio.api_token.clone(),
-        model: config.worker.model.clone(),
-    };
-    let model = RawModel::new(endpoint, think || config.worker.thinking);
-    let registry = Registry::builtin();
-    let ctx = Ctx {
-        root: std::env::current_dir()?,
-    };
-    let (events, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(256);
-    let cancel = CancellationToken::new();
-    {
-        let cancel = cancel.clone();
-        tokio::spawn(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            cancel.cancel();
-        });
-    }
-
-    let printer = tokio::spawn(async move {
-        let mut out = std::io::stdout();
-        let mut dim = false;
-        let mut at_line_start = true;
-        while let Some(evt) = rx.recv().await {
-            match evt {
-                AgentEvent::TurnStart { .. } => {}
-                AgentEvent::Reasoning { text, .. } => {
-                    if !dim {
-                        print!("\x1b[2m");
-                        dim = true;
-                    }
-                    print!("{text}");
-                    at_line_start = text.ends_with('\n');
+/// Draw the agent's events as they come: reasoning dimmed, tool calls as one
+/// line each with the first line of their result under it.
+async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
+    let mut out = std::io::stdout();
+    let mut dim = false;
+    let mut at_line_start = true;
+    while let Some(evt) = rx.recv().await {
+        match evt {
+            AgentEvent::TurnStart { .. } => {}
+            AgentEvent::Reasoning { text, .. } => {
+                if !dim {
+                    print!("\x1b[2m");
+                    dim = true;
                 }
-                AgentEvent::Text { text, .. } => {
-                    if dim {
-                        println!("\x1b[0m");
-                        dim = false;
-                    }
-                    print!("{text}");
-                    at_line_start = text.ends_with('\n');
-                }
-                AgentEvent::ToolStart { summary, .. } => {
-                    if dim {
-                        print!("\x1b[0m");
-                        dim = false;
-                    }
-                    if !at_line_start {
-                        println!();
-                    }
-                    print!("\x1b[32m⏺\x1b[0m {summary}");
-                    at_line_start = false;
-                }
-                AgentEvent::ToolDone { ok, output, .. } => {
-                    let first = output
-                        .lines()
-                        .next()
-                        .unwrap_or("")
-                        .chars()
-                        .take(100)
-                        .collect::<String>();
-                    let lines = output.lines().count();
-                    let more = if lines > 1 {
-                        format!(" (+{} lines)", lines - 1)
-                    } else {
-                        String::new()
-                    };
-                    let mark = if ok { "\x1b[2m" } else { "\x1b[31m" };
-                    println!("\n  {mark}⎿ {first}{more}\x1b[0m");
-                    at_line_start = true;
-                }
-                AgentEvent::TurnEnd {
-                    role,
-                    usage,
-                    seconds,
-                } => {
-                    if dim {
-                        print!("\x1b[0m");
-                        dim = false;
-                    }
-                    if !at_line_start {
-                        println!();
-                    }
-                    let who = match role {
-                        Role::Planner => "planner",
-                        Role::Worker => "worker",
-                    };
-                    println!(
-                        "\x1b[2m  {who} {seconds:.1}s · prompt {} · reasoning {} · answer {}\x1b[0m",
-                        usage.prompt_tokens,
-                        usage.reasoning_tokens,
-                        usage
-                            .completion_tokens
-                            .saturating_sub(usage.reasoning_tokens)
-                    );
-                    at_line_start = true;
-                }
+                print!("{text}");
+                at_line_start = text.ends_with('\n');
             }
-            let _ = out.flush();
+            AgentEvent::Text { text, .. } => {
+                if dim {
+                    println!("\x1b[0m");
+                    dim = false;
+                }
+                print!("{text}");
+                at_line_start = text.ends_with('\n');
+            }
+            AgentEvent::ToolStart { summary, .. } => {
+                if dim {
+                    print!("\x1b[0m");
+                    dim = false;
+                }
+                if !at_line_start {
+                    println!();
+                }
+                print!("\x1b[32m⏺\x1b[0m {summary}");
+                at_line_start = false;
+            }
+            AgentEvent::ToolDone { ok, output, .. } => {
+                let first = output
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(100)
+                    .collect::<String>();
+                let lines = output.lines().count();
+                let more = if lines > 1 {
+                    format!(" (+{} lines)", lines - 1)
+                } else {
+                    String::new()
+                };
+                let mark = if ok { "\x1b[2m" } else { "\x1b[31m" };
+                println!("\n  {mark}⎿ {first}{more}\x1b[0m");
+                at_line_start = true;
+            }
+            AgentEvent::TurnEnd {
+                role,
+                usage,
+                seconds,
+            } => {
+                if dim {
+                    print!("\x1b[0m");
+                    dim = false;
+                }
+                if !at_line_start {
+                    println!();
+                }
+                let who = match role {
+                    Role::Planner => "planner",
+                    Role::Worker => "worker",
+                };
+                println!(
+                    "\x1b[2m  {who} {seconds:.1}s · prompt {} · reasoning {} · answer {}\x1b[0m",
+                    usage.prompt_tokens,
+                    usage.reasoning_tokens,
+                    usage
+                        .completion_tokens
+                        .saturating_sub(usage.reasoning_tokens)
+                );
+                at_line_start = true;
+            }
         }
-    });
-
-    let approver: Box<dyn Approver> = if yes {
-        Box::new(Yes)
-    } else {
-        Box::new(Terminal)
-    };
-    let mut worker = Worker {
-        model: &model,
-        registry: &registry,
-        ctx: &ctx,
-        approver: approver.as_ref(),
-        events,
-        cancel,
-        allowed: Default::default(),
-    };
-    let mut messages = vec![Message::System(prompts::WORKER.into()), Message::User(task)];
-    let began = Instant::now();
-    let result = worker.run(&mut messages).await;
-    drop(worker);
-    let _ = printer.await;
-    let outcome = result?;
-    println!(
-        "\n\x1b[2m{} rounds · {:.0}s · {} prompt + {} completion tokens · touched: {}\x1b[0m",
-        outcome.rounds,
-        began.elapsed().as_secs_f32(),
-        outcome.usage.prompt_tokens,
-        outcome.usage.completion_tokens,
-        if outcome.touched.is_empty() {
-            "nothing".to_string()
-        } else {
-            outcome.touched.join(", ")
-        }
-    );
-    Ok(())
+        let _ = out.flush();
+    }
 }
 
 async fn tool(name: String, args: Option<String>) -> Result<()> {
@@ -300,7 +394,7 @@ async fn probe(config: &Config, question: Option<String>, think: bool) -> Result
     // Rust: `async move` would move `req` into the block; borrowing first means
     // the block moves only the two references, and `req` is still ours after.
     let (planner, req_ref) = (&planner, &req);
-    run(
+    stream_once(
         |tx| async move { planner.stream(req_ref, &tx).await },
         "planner",
     )
@@ -313,7 +407,7 @@ async fn probe(config: &Config, question: Option<String>, think: bool) -> Result
     );
     let worker = RawModel::new(endpoint(&config.worker.model), think);
     let (worker, req_ref) = (&worker, &req);
-    run(
+    stream_once(
         |tx| async move { worker.stream(req_ref, &tx).await },
         "worker",
     )
@@ -326,7 +420,7 @@ async fn probe(config: &Config, question: Option<String>, think: bool) -> Result
 // Each model's `stream` has its own type, and this lets one printer serve both.
 // The closure takes the sender by value, so the future owns it and closes the
 // channel when it finishes, which is what ends the printer's loop.
-async fn run<F, Fut>(start: F, who: &str) -> Result<()>
+async fn stream_once<F, Fut>(start: F, who: &str) -> Result<()>
 where
     F: FnOnce(weft::lm::Sender) -> Fut,
     Fut: Future<Output = Result<weft::lm::Reply, weft::lm::LmError>>,

@@ -16,16 +16,16 @@ Built on a Mac Studio with `qwen/qwen3.8-27b` as the planner and
 Early. The worker loop works end to end; the planner, the full-screen UI and
 MCP servers are next.
 
-```
-$ weft run "The slugify tests fail. Fix slug.js so they pass, and run the tests."
-⏺ Read slug.test.js        ⎿ 1  import { test } from 'node:test'; (+12 lines)
-⏺ Read slug.js             ⎿ 1  // Turn a title into a URL slug. (+3 lines)
-⏺ Bash node --test …       ⎿ ✔ lowercases and hyphenates (+58 lines)
-⏺ Edit slug.js             ⎿ edited slug.js (+4 −1)
-⏺ Bash node --test …       ⎿ ✔ lowercases and hyphenates (+10 lines)
-All 3 tests pass. slug.js:2-4: …
-5 rounds · 14s · 9708 prompt + 384 completion tokens · touched: slug.js
-```
+One task, start to finish, with the worker's thinking off. Each `⏺` line is a
+tool call with the first line of its result beneath; the dim lines are what
+each model turn cost.
+
+![weft run fixing a failing test](docs/run.png)
+
+Run `weft` on its own in a repository for a session: tasks given one after
+another share the conversation.
+
+![a weft session](docs/session.png)
 
 ## Two routes to one server
 
@@ -65,17 +65,18 @@ chmod 600 ~/.config/weft/config.toml
 ## Commands
 
 ```bash
-weft run "task"            # the worker does the task in the current folder
-weft run -y "task"         # approve every tool call without asking
-weft run --think "task"    # let the worker think before each step
+weft                       # a session in the current folder; /think, /clear, /quit
+weft run "task"            # one task, then exit
+weft -y …                  # approve every tool call without asking
+weft --think …             # let the worker think before each step
 weft probe                 # ask both models one question; shows each route working
 weft tool search '{"pattern":"fn main","glob":"*.rs"}'   # run one tool by hand
 ```
 
 Edits, new files and shell commands ask first: `[y] once  [a] always this
-session  [n] no`. Every path is resolved against the project root and refused
-outside it, symlinks included. `pkill`, `killall` and force pushes are never
-run.
+session  [n] no`. Ctrl-C stops the current task and keeps the session. Every
+path is resolved against the project root and refused outside it, symlinks
+included. `pkill`, `killall` and force pushes are never run.
 
 ## Tools the worker has
 
