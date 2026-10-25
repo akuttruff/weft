@@ -5,6 +5,7 @@
 //! Both are served by LM Studio; see [`lm`] for the two routes.
 
 pub mod agent;
+pub mod checkpoint;
 pub mod config;
 pub mod lm;
 pub mod mcp;

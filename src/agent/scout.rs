@@ -229,7 +229,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.rs"), "fn health() {}\n").unwrap();
         let (events, mut rx) = mpsc::channel(64);
-        let ctx = Ctx::new(dir.path().to_path_buf()).for_task(Some(events), Default::default());
+        let ctx =
+            Ctx::new(dir.path().to_path_buf()).for_task(Some(events), Default::default(), None);
         let scout = Scout::new(Box::new(Scripted(Mutex::new(vec![
             Reply {
                 tool_calls: vec![ToolCall {
@@ -279,7 +280,8 @@ mod tests {
         std::fs::create_dir(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/view.rs"), "fn draw() {}\n").unwrap();
         let (events, _rx) = mpsc::channel(64);
-        let ctx = Ctx::new(dir.path().to_path_buf()).for_task(Some(events), Default::default());
+        let ctx =
+            Ctx::new(dir.path().to_path_buf()).for_task(Some(events), Default::default(), None);
         let scout = Scout::new(Box::new(Scripted(Mutex::new(vec![
             Reply {
                 content: "`src/model/edits.rs:3` holds EditLine.".into(),

@@ -53,6 +53,7 @@ const COMMANDS: &[(&str, &str, bool)] = &[
     ("/think", "toggle the worker's thinking", false),
     ("/clear", "start a fresh conversation", false),
     ("/compact", "fold earlier tasks into a note", false),
+    ("/undo", "put back the files the last task changed", false),
     ("/resume", "pick up an earlier session", true),
     ("/cost", "tokens used this session", false),
     ("/mcp", "MCP servers and their tools", false),
@@ -738,6 +739,20 @@ impl App {
                 self.push(view::note_line("fresh conversation"));
             }
             "/compact" => self.compact(tx),
+            "/undo" => {
+                if self.running.is_some() {
+                    self.push(view::note_line("a task is running; esc stops it"));
+                } else {
+                    match self.session.undo() {
+                        Ok(Some(files)) => self.push(view::note_line(&format!(
+                            "put back {}",
+                            files.join(", ")
+                        ))),
+                        Ok(None) => self.push(view::note_line("nothing to undo")),
+                        Err(e) => self.push(view::error_line(&format!("  undo failed: {e:#}"))),
+                    }
+                }
+            }
             "/resume" if rest.is_empty() => {
                 let me = self.session.transcript_id();
                 match self.sessions_dir().and_then(|d| transcript::list(&d)) {

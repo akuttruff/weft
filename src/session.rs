@@ -15,6 +15,7 @@ use crate::agent::scout::Scout;
 use crate::agent::tandem::{Mode, Tandem, TandemOutcome, snapshot};
 use crate::agent::worker::WorkerError;
 use crate::agent::{AgentEvent, Approver, Events, Model, Role, prompts};
+use crate::checkpoint::Checkpoint;
 use crate::config::{Config, Confirm, PlanWhen};
 use crate::lm::chat::ChatModel;
 use crate::lm::raw::RawModel;
@@ -61,8 +62,10 @@ pub struct Session {
     /// and how many tasks it has run: an untouched new file is removed at the end.
     fresh_transcript: Mutex<bool>,
     tasks_run: AtomicUsize,
-    /// A note for the worker above its next task, set by a resume.
+    /// A note for the worker above its next task, set by a resume or an undo.
     lead: Mutex<Option<String>>,
+    /// One checkpoint per task that changed files, newest last, for `/undo`.
+    checkpoints: Mutex<Vec<Arc<Checkpoint>>>,
 }
 
 impl Session {
@@ -123,7 +126,39 @@ impl Session {
             fresh_transcript: Mutex::new(false),
             tasks_run: AtomicUsize::new(0),
             lead: Mutex::new(None),
+            checkpoints: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Where this task's kept copies go: beside the transcripts, per session and task.
+    fn checkpoint_dir(&self) -> Option<std::path::PathBuf> {
+        let home = std::env::home_dir()?;
+        let session = self.transcript_id().unwrap_or_else(|| "session".into());
+        let n = self.tasks_run.load(Ordering::Relaxed);
+        Some(
+            home.join(".local/share/weft/checkpoints")
+                .join(transcript::slug(&self.ctx.root))
+                .join(format!("{session}-{n}")),
+        )
+    }
+
+    /// `/undo`: put back the files the last task changed. `None` when there is
+    /// nothing to undo. The worker is told on its next task.
+    pub fn undo(&self) -> anyhow::Result<Option<Vec<String>>> {
+        let Some(cp) = self.checkpoints.lock().unwrap().pop() else {
+            return Ok(None);
+        };
+        let files = cp.restore(&self.ctx.root)?;
+        let mut lead = self.lead.lock().unwrap();
+        let note = format!(
+            "## Undone\nThe user put these files back as they were before your last task: {}. Your edits to them are gone; read a file again before editing it.\n\n",
+            files.join(", ")
+        );
+        *lead = Some(match lead.take() {
+            Some(earlier) => format!("{earlier}{note}"),
+            None => note,
+        });
+        Ok(Some(files))
     }
 
     /// Pick up an earlier session: its conversation becomes the worker's, its
@@ -177,6 +212,10 @@ impl Session {
             && let Some(t) = self.transcript.lock().unwrap().take()
         {
             let _ = std::fs::remove_file(&t.path);
+        }
+        // Undo is for the session; the kept copies go with it.
+        for cp in self.checkpoints.lock().unwrap().drain(..) {
+            cp.discard();
         }
     }
 
@@ -281,8 +320,11 @@ impl Session {
                 }
             }
         });
-        // The tools learn this task's stop signal and event stream.
-        let ctx = self.ctx.for_task(Some(inner.clone()), cancel.clone());
+        // The tools learn this task's stop signal, event stream and checkpoint.
+        let checkpoint = self.checkpoint_dir().map(|d| Arc::new(Checkpoint::new(d)));
+        let ctx = self
+            .ctx
+            .for_task(Some(inner.clone()), cancel.clone(), checkpoint.clone());
         let mut tandem = Tandem {
             planner: &self.planner,
             reviewer: &self.reviewer,
@@ -337,6 +379,13 @@ impl Session {
         drop(ctx);
         drop(inner);
         let _ = forward.await;
+        if let Some(cp) = checkpoint {
+            if cp.is_empty() {
+                cp.discard();
+            } else {
+                self.checkpoints.lock().unwrap().push(cp);
+            }
+        }
         self.record(Record::Done {
             at: transcript::now(),
             seconds: began.elapsed().as_secs_f32(),
@@ -355,7 +404,9 @@ impl Session {
         before: u32,
     ) -> Result<Compacted, WorkerError> {
         let mut messages = std::mem::take(&mut *self.messages.lock().unwrap());
-        let ctx = self.ctx.for_task(Some(events.clone()), cancel.clone());
+        let ctx = self
+            .ctx
+            .for_task(Some(events.clone()), cancel.clone(), None);
         let result = self.fold(&ctx, events, cancel, &mut messages, before).await;
         *self.messages.lock().unwrap() = messages;
         result

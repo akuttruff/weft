@@ -183,6 +183,7 @@ impl Tool for WriteFile {
                 display(&ctx.root, &path)
             )));
         }
+        super::keep_before_change(ctx, &path)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -245,6 +246,7 @@ impl Tool for EditFile {
                 let at = text.find(old).unwrap_or(0);
                 let line = text[..at].matches('\n').count() + 1;
                 let updated = text.replacen(old, new, 1);
+                super::keep_before_change(ctx, &path)?;
                 std::fs::write(&path, &updated)?;
                 let (added, removed) = line_delta(old, new);
                 Ok(format!("edited {shown}:{line} (+{added} −{removed})"))

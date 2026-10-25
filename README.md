@@ -45,7 +45,8 @@ menu: `/plan <task>` plans first and waits for your word on the plan, `/go
 <task>` never plans, `/think`
 toggles the worker's thinking, `/clear` starts a fresh conversation,
 `/resume` lists this folder's earlier sessions and `/resume 2` picks one up,
-`/compact` folds the earlier tasks into a note now, `/cost` shows the tokens
+`/compact` folds the earlier tasks into a note now, `/undo` puts back the last
+task's files, `/cost` shows the tokens
 used, `/mcp` lists the MCP servers and their tools, `/help`, `/quit`.
 
 ## How a task flows
@@ -66,6 +67,11 @@ used, `/mcp` lists the MCP servers and their tools, `/help`, `/quit`.
 
 Tasks given one after another in a session share the worker's conversation, so
 "now do the same for X" works.
+
+**Undo.** `/undo` puts back the files the last task changed, and the one
+before that on a second `/undo`, for the rest of the session. It covers
+weft's own edits and new files, not what a shell command did to the tree.
+The worker is told on its next task.
 
 **Plan mode.** A task given as `/plan <task>` stops once the plan is on the
 screen. Enter lets the worker go; typing notes and pressing enter sends the

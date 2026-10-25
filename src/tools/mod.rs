@@ -10,6 +10,7 @@ pub mod files;
 pub mod search;
 
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -17,6 +18,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::Events;
+use crate::checkpoint::Checkpoint;
 use crate::lm::{ToolCall, ToolSpec};
 
 /// What the tools know about where they are, and about the task they run in.
@@ -28,6 +30,8 @@ pub struct Ctx {
     pub cancel: CancellationToken,
     /// Where a tool that runs a model of its own (the scout) reports its turns.
     pub events: Option<Events>,
+    /// Where files are kept as they were before this task changes them, for `/undo`.
+    pub checkpoint: Option<Arc<Checkpoint>>,
 }
 
 impl Ctx {
@@ -36,17 +40,34 @@ impl Ctx {
             root,
             cancel: CancellationToken::new(),
             events: None,
+            checkpoint: None,
         }
     }
 
-    /// The same folder, tied to one task's stop signal and event stream.
-    pub fn for_task(&self, events: Option<Events>, cancel: CancellationToken) -> Self {
+    /// The same folder, tied to one task's stop signal, event stream and checkpoint.
+    pub fn for_task(
+        &self,
+        events: Option<Events>,
+        cancel: CancellationToken,
+        checkpoint: Option<Arc<Checkpoint>>,
+    ) -> Self {
         Self {
             root: self.root.clone(),
             cancel,
             events,
+            checkpoint,
         }
     }
+}
+
+/// Keep `path` as it is before a tool changes it, when a checkpoint is being kept.
+pub fn keep_before_change(ctx: &Ctx, path: &Path) -> Result<(), ToolError> {
+    if let Some(cp) = &ctx.checkpoint
+        && let Ok(rel) = path.strip_prefix(&ctx.root)
+    {
+        cp.before_write(&ctx.root, &rel.to_string_lossy())?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]
