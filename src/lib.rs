@@ -4,6 +4,7 @@
 //! the result; the worker (a fast MoE model, thinking off) runs the tool loop.
 //! Both are served by LM Studio; see [`lm`] for the two routes.
 
+pub mod agent;
 pub mod config;
 pub mod lm;
 pub mod tools;
