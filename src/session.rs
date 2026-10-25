@@ -17,6 +17,7 @@ use crate::agent::worker::WorkerError;
 use crate::agent::{AgentEvent, Approver, Events, Model, Role, prompts};
 use crate::checkpoint::Checkpoint;
 use crate::config::{Config, Confirm, PlanWhen};
+use crate::hooks::{self, Hooks, On};
 use crate::lm::chat::ChatModel;
 use crate::lm::raw::RawModel;
 use crate::lm::{Endpoint, Message};
@@ -38,6 +39,8 @@ pub struct Session {
     digest: Box<dyn Model>,
     /// Compact once the worker's context reaches this; 0 never.
     pub compact_at: u32,
+    /// The config's hooks; the registry runs the edit and shell ones, the session the task ones.
+    hooks: Hooks,
     /// The worker's context window, in tokens.
     pub window: u32,
     pub ctx: Ctx,
@@ -92,7 +95,9 @@ impl Session {
         };
         // One scout each, so the planner's and the worker's tool sets are independent.
         let scout = || Box::new(Scout::new(helper())) as Box<dyn crate::tools::Tool>;
-        let mut registry = Registry::builtin().with_rules(config.approve.clone());
+        let mut registry = Registry::builtin()
+            .with_rules(config.approve.clone())
+            .with_hooks(config.hooks.clone());
         registry.extend(vec![scout()]);
         let mut planner_registry = Registry::read_only();
         planner_registry.extend(vec![scout()]);
@@ -111,6 +116,7 @@ impl Session {
             planner_registry,
             digest: helper(),
             compact_at: config.compact.at,
+            hooks: Hooks(config.hooks.clone()),
             window: config.compact.window,
             scout_model,
             ctx: Ctx::new(root),
@@ -374,6 +380,24 @@ impl Session {
                 .await
             {
                 let _ = inner.send(done.event()).await;
+            }
+        }
+        // after_task hooks: a check of your own once the files are in place.
+        if let Ok(out) = &result
+            && self.hooks.has(On::AfterTask)
+        {
+            let touched = out.touched.join(",");
+            for o in self
+                .hooks
+                .run(On::AfterTask, &self.ctx.root, &[("WEFT_TOUCHED", &touched)])
+                .await
+            {
+                let _ = inner
+                    .send(AgentEvent::Hook {
+                        ok: o.ok,
+                        text: hooks::describe(std::slice::from_ref(&o)),
+                    })
+                    .await;
             }
         }
         drop(ctx);

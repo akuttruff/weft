@@ -50,6 +50,8 @@ pub fn rows(tool: &str, args: &Value, output: &str) -> Option<(Vec<Row>, usize)>
 
 /// `edited src/a.rs:12 (+3 −1)` → 12. Without one, the numbers start at 1.
 fn start_line(output: &str) -> usize {
+    // A hook's say may follow on later lines.
+    let output = output.lines().next().unwrap_or("");
     let loc = output.strip_prefix("edited ").unwrap_or(output);
     let loc = loc.rsplit_once(" (").map_or(loc, |(l, _)| l);
     loc.rsplit_once(':')

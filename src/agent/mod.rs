@@ -104,6 +104,11 @@ pub enum AgentEvent {
         usage: Usage,
         seconds: f32,
     },
+    /// An `after_task` hook ran; `text` is what it said.
+    Hook {
+        ok: bool,
+        text: String,
+    },
     /// Old tool results were dropped mid-task to stay inside the window.
     Trimmed {
         dropped: usize,

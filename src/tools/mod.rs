@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::Events;
 use crate::checkpoint::Checkpoint;
+use crate::hooks::{self, Hooks, On};
 use crate::lm::{ToolCall, ToolSpec};
 
 /// What the tools know about where they are, and about the task they run in.
@@ -155,6 +156,7 @@ fn leads_with(cmd: &str, words: &str) -> bool {
 pub struct Registry {
     tools: Vec<Box<dyn Tool>>,
     rules: Rules,
+    hooks: Hooks,
 }
 
 impl Registry {
@@ -170,12 +172,19 @@ impl Registry {
                 Box::new(bash::Bash),
             ],
             rules: Rules::default(),
+            hooks: Hooks::default(),
         }
     }
 
     /// The same tools, with these calls allowed without asking.
     pub fn with_rules(mut self, rules: Rules) -> Self {
         self.rules = rules;
+        self
+    }
+
+    /// The same tools, with these hooks around edits and shell commands.
+    pub fn with_hooks(mut self, hooks: Vec<crate::hooks::Hook>) -> Self {
+        self.hooks = Hooks(hooks);
         self
     }
 
@@ -188,6 +197,7 @@ impl Registry {
                 Box::new(search::Search),
             ],
             rules: Rules::default(),
+            hooks: Hooks::default(),
         }
     }
 
@@ -196,6 +206,7 @@ impl Registry {
         Self {
             tools: vec![],
             rules: Rules::default(),
+            hooks: Hooks::default(),
         }
     }
 
@@ -238,7 +249,43 @@ impl Registry {
         let tool = self
             .get(&call.name)
             .ok_or_else(|| ToolError::Unknown(call.name.clone()))?;
-        tool.run(&call.arguments, ctx).await
+        let arg = |k: &str| call.arguments.get(k).and_then(Value::as_str).unwrap_or("");
+        // A before_bash hook that fails stops the command; what it printed is the reason.
+        if call.name == "bash" && self.hooks.has(On::BeforeBash) {
+            let outcomes = self
+                .hooks
+                .run(
+                    On::BeforeBash,
+                    &ctx.root,
+                    &[("WEFT_COMMAND", arg("command"))],
+                )
+                .await;
+            if let Some(no) = outcomes.iter().find(|o| !o.ok) {
+                let why = if no.output.is_empty() {
+                    &no.run
+                } else {
+                    &no.output
+                };
+                return Err(ToolError::Refused(format!(
+                    "a hook stopped this command: {why}"
+                )));
+            }
+        }
+        let mut out = tool.run(&call.arguments, ctx).await?;
+        // After an edit, the hooks' output (a formatter's say) goes to the model too.
+        if matches!(call.name.as_str(), "edit_file" | "write_file") && self.hooks.has(On::AfterEdit)
+        {
+            let outcomes = self
+                .hooks
+                .run(On::AfterEdit, &ctx.root, &[("WEFT_PATH", arg("path"))])
+                .await;
+            let said = hooks::describe(&outcomes);
+            if !said.is_empty() {
+                out.push('\n');
+                out.push_str(&said);
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -350,6 +397,60 @@ pub fn cap(text: &str, max_lines: usize, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn hooks_guard_shell_commands_and_speak_after_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        let ctx = Ctx::new(dir.path().to_path_buf());
+        let registry = Registry::builtin().with_hooks(vec![
+            crate::hooks::Hook {
+                on: On::BeforeBash,
+                run: "case \"$WEFT_COMMAND\" in *rm*) echo no deleting; exit 1;; esac".into(),
+            },
+            crate::hooks::Hook {
+                on: On::AfterEdit,
+                run: "echo tidied $WEFT_PATH".into(),
+            },
+        ]);
+        let call = |name: &str, args: Value| ToolCall {
+            id: "c".into(),
+            name: name.into(),
+            arguments: args,
+        };
+        let refused = registry
+            .run(
+                &call("bash", serde_json::json!({"command": "rm a.txt"})),
+                &ctx,
+            )
+            .await;
+        assert!(
+            matches!(&refused, Err(ToolError::Refused(m)) if m.contains("no deleting")),
+            "{refused:?}"
+        );
+        let ok = registry
+            .run(
+                &call("bash", serde_json::json!({"command": "echo fine"})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(ok.contains("fine"));
+        let edited = registry
+            .run(
+                &call(
+                    "edit_file",
+                    serde_json::json!({"path": "a.txt", "old_string": "hello", "new_string": "bye"}),
+                ),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            edited,
+            "edited a.txt:1 (+1 −1)\nhook `echo tidied $WEFT_PATH`: tidied a.txt"
+        );
+    }
 
     #[test]
     fn rules_match_leading_words_in_every_part_of_a_chain() {

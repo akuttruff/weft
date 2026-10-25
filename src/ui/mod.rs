@@ -440,6 +440,17 @@ impl App {
                 vec![Span::styled("  │ ", Style::new().fg(Color::Cyan))],
             ),
             AgentEvent::Review { approved, text } => self.push(view::review_lines(approved, &text)),
+            AgentEvent::Hook { ok, text } => {
+                self.flush_text();
+                if text.is_empty() {
+                    return;
+                }
+                if ok {
+                    self.push(view::note_line(&format!("  {text}")));
+                } else {
+                    self.push(view::error_line(&format!("  {text}")));
+                }
+            }
             AgentEvent::Trimmed { dropped, tokens } => {
                 self.flush_text();
                 self.push(view::note_line(&format!(

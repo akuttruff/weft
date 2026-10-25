@@ -196,6 +196,29 @@ Read `git diff` and list anything a careful reviewer would flag: bugs, missing
 tests, naming, and departures from WEFT.md. Do not change files.
 ```
 
+## Hooks
+
+A hook is a shell command of yours that weft runs at a set moment, from the
+config:
+
+```toml
+[[hooks]]
+on = "after_edit"             # after_edit | before_bash | after_task
+run = "cargo fmt"             # run with `sh -c` in the project root
+
+[[hooks]]
+on = "before_bash"
+run = 'case "$WEFT_COMMAND" in *"git push"*) echo "push by hand"; exit 1;; esac'
+```
+
+`after_edit` runs after every edit or new file, with `WEFT_PATH` set; what it
+prints goes to the model along with the tool result, so a formatter's changes
+or a linter's complaint reach the worker at once. `before_bash` runs before
+every shell command with `WEFT_COMMAND` set; a non-zero exit stops the command
+and what the hook printed is the reason the worker sees. `after_task` runs
+when a task ends, with `WEFT_TOUCHED` listing the files it changed; its output
+is shown on the screen.
+
 ## Approvals
 
 Edits, new files and shell commands ask first: `[y] once  [a] always this

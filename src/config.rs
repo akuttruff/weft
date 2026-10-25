@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use crate::hooks::Hook;
 use crate::lm::Effort;
 use crate::tools::Rules;
 
@@ -20,6 +21,9 @@ pub struct Config {
     /// Tool calls that run without asking.
     #[serde(default)]
     pub approve: Rules,
+    /// Your commands at set moments; see `hooks`.
+    #[serde(default)]
+    pub hooks: Vec<Hook>,
 }
 
 /// When the worker's conversation is folded into a handover note.
@@ -186,5 +190,6 @@ model = "qwen3.5-122b-a10b"
         assert_eq!(config.compact.at, 48_000);
         assert_eq!(config.compact.window, 65_536);
         assert!(config.approve.commands.is_empty());
+        assert!(config.hooks.is_empty());
     }
 }

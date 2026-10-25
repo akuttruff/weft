@@ -559,6 +559,12 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
                 }
                 at_line_start = true;
             }
+            AgentEvent::Hook { ok, text } => {
+                if !text.is_empty() {
+                    let color = if ok { "2" } else { "31" };
+                    println!("\x1b[{color}m  {text}\x1b[0m");
+                }
+            }
             AgentEvent::Trimmed { dropped, tokens } => println!(
                 "\x1b[2m  dropped {dropped} earlier tool results to make room (context {tokens} tokens)\x1b[0m"
             ),

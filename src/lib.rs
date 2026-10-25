@@ -8,6 +8,7 @@ pub mod agent;
 pub mod checkpoint;
 pub mod commands;
 pub mod config;
+pub mod hooks;
 pub mod lm;
 pub mod mcp;
 pub mod session;
