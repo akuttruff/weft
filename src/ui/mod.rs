@@ -8,7 +8,10 @@
 //! `insert_before` and never redrawn again.
 
 pub mod diff;
+mod input;
 mod view;
+
+use input::Input;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -109,7 +112,7 @@ struct App {
     session: Arc<Session>,
     yes: bool,
     think: bool,
-    input: String,
+    input: Input,
     history: Vec<String>,
     history_at: Option<usize>,
     menu_at: usize,
@@ -168,7 +171,7 @@ async fn event_loop(
         session,
         yes,
         think,
-        input: String::new(),
+        input: Input::default(),
         history: Vec::new(),
         history_at: None,
         menu_at: 0,
@@ -211,6 +214,9 @@ async fn event_loop(
     ));
     if !app.session.mcp.is_empty() {
         app.push(view::mcp_summary(&app.session.mcp));
+    }
+    for warning in app.session.warnings.clone() {
+        app.push(view::error_line(&format!("⚠ {warning}")));
     }
     match resume {
         Some(saved) => app.resume(saved),
@@ -482,7 +488,7 @@ impl App {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key, tx),
             Event::Paste(text) => {
                 self.input
-                    .push_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
+                    .insert_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
                 self.history_at = None;
             }
             _ => {}
@@ -545,11 +551,11 @@ impl App {
             (KeyCode::Enter, _) | (KeyCode::Char('j'), true)
                 if ctrl || key.modifiers.contains(KeyModifiers::ALT) =>
             {
-                self.input.push('\n');
+                self.input.insert('\n');
             }
             (KeyCode::Enter, _) => {
                 if let Some(stripped) = self.input.strip_suffix('\\') {
-                    self.input = format!("{stripped}\n");
+                    self.input.set(format!("{stripped}\n"));
                 } else if self.menu_open() {
                     self.complete_menu(tx);
                 } else {
@@ -558,18 +564,16 @@ impl App {
             }
             (KeyCode::Tab, _) if self.menu_open() => self.complete_menu(tx),
             (KeyCode::Backspace, _) => {
-                self.input.pop();
+                self.input.backspace();
                 self.history_at = None;
             }
             (KeyCode::Char('u'), true) => self.input.clear(),
-            (KeyCode::Char('w'), true) => {
-                let trimmed = self.input.trim_end();
-                let cut = trimmed
-                    .rfind(char::is_whitespace)
-                    .map(|i| i + 1)
-                    .unwrap_or(0);
-                self.input.truncate(cut);
-            }
+            (KeyCode::Char('w'), true) => self.input.delete_word(),
+            (KeyCode::Left, _) => self.input.left(),
+            (KeyCode::Right, _) => self.input.right(),
+            (KeyCode::Home, _) | (KeyCode::Char('a'), true) => self.input.home(),
+            (KeyCode::End, _) | (KeyCode::Char('e'), true) => self.input.end(),
+            (KeyCode::Delete, _) => self.input.delete(),
             (KeyCode::Up, _) => {
                 if self.menu_open() {
                     self.menu_at = self.menu_at.saturating_sub(1);
@@ -586,7 +590,7 @@ impl App {
                 }
             }
             (KeyCode::Char(c), false) => {
-                self.input.push(c);
+                self.input.insert(c);
                 self.history_at = None;
                 self.menu_at = 0;
             }
@@ -614,7 +618,8 @@ impl App {
             (Some(i), _) => Some(i + 1),
         };
         self.history_at = at;
-        self.input = at.map(|i| self.history[i].clone()).unwrap_or_default();
+        self.input
+            .set(at.map(|i| self.history[i].clone()).unwrap_or_default());
     }
 
     // ---- The slash menu ---------------------------------------------------------
@@ -628,7 +633,7 @@ impl App {
     fn menu_items(&self) -> Vec<&'static (&'static str, &'static str, bool)> {
         COMMANDS
             .iter()
-            .filter(|(name, _, _)| name.starts_with(self.input.as_str()))
+            .filter(|(name, _, _)| name.starts_with(&*self.input))
             .collect()
     }
 
@@ -640,9 +645,9 @@ impl App {
             return;
         };
         if takes_task {
-            self.input = format!("{name} ");
+            self.input.set(format!("{name} "));
         } else {
-            self.input = name.to_string();
+            self.input.set(name.to_string());
             self.submit(tx);
         }
     }
@@ -733,7 +738,7 @@ impl App {
                         Span::styled(what.to_string(), Style::new().dim()),
                     ]));
                 }
-                lines.push(Line::from(Span::styled("  enter sends · ctrl-j or \\ + enter for a newline · ↑↓ history · esc stops a task · y/a/n answer approvals · ctrl-c twice leaves", Style::new().dim())));
+                lines.push(Line::from(Span::styled("  enter sends · ctrl-j or \\ + enter for a newline · ← → home end move · ↑↓ history · esc stops a task · y/a/n answer approvals · ctrl-c twice leaves", Style::new().dim())));
                 self.push(lines);
             }
             "/plan" | "/go" if rest.is_empty() => {
@@ -905,7 +910,7 @@ impl App {
             }
             Text::from(lines)
         };
-        let (row, col) = cursor_at(&self.input, inner.width);
+        let (row, col) = self.input.cursor_at(inner.width);
         let scroll = row.saturating_sub(inner.height.saturating_sub(1));
         frame.render_widget(
             Paragraph::new(shown)
@@ -923,7 +928,7 @@ impl App {
         let items = self.menu_items();
         let mut lines = vec![Line::from(vec![
             Span::styled("> ", Style::new().bold()),
-            Span::raw(self.input.clone()),
+            Span::raw(self.input.to_string()),
         ])];
         for (i, (name, what, _)) in items.iter().enumerate() {
             let style = if i == self.menu_at.min(items.len() - 1) {
@@ -1020,44 +1025,10 @@ impl App {
     }
 }
 
-/// Where the cursor sits after `input` once wrapped at `width`, with the `> ` prefix.
-fn cursor_at(input: &str, width: u16) -> (u16, u16) {
-    let width = width.max(3) as usize;
-    let mut row = 0usize;
-    let mut col = 0usize;
-    for (i, seg) in input.split('\n').enumerate() {
-        if i > 0 {
-            row += 1;
-        }
-        let len = 2 + seg.width();
-        row += len / width;
-        col = len % width;
-        if len > 0 && len % width == 0 && i == input.split('\n').count() - 1 {
-            // The cursor sits at the start of the next row when a row is exactly full.
-            col = 0;
-        }
-    }
-    (row as u16, col as u16)
-}
-
 fn add(a: Usage, b: Usage) -> Usage {
     Usage {
         prompt_tokens: a.prompt_tokens + b.prompt_tokens,
         completion_tokens: a.completion_tokens + b.completion_tokens,
         reasoning_tokens: a.reasoning_tokens + b.reasoning_tokens,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cursor_follows_wrapping_and_newlines() {
-        assert_eq!(cursor_at("", 20), (0, 2));
-        assert_eq!(cursor_at("abc", 20), (0, 5));
-        assert_eq!(cursor_at("a\nbc", 20), (1, 4));
-        assert_eq!(cursor_at(&"x".repeat(18), 20), (1, 0));
-        assert_eq!(cursor_at(&"x".repeat(19), 20), (1, 1));
     }
 }

@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -44,6 +44,8 @@ pub struct Session {
     pub review_rounds: u8,
     /// The MCP servers that were configured and how each came up.
     pub mcp: Vec<mcp::Status>,
+    /// Things worth a line on the screen at the start: a model not loaded.
+    pub warnings: Vec<String>,
     /// The servers themselves, kept so their processes live as long as the session.
     servers: Vec<mcp::Server>,
     /// Tools approved for the whole session, carried from task to task.
@@ -54,6 +56,10 @@ pub struct Session {
     messages: Mutex<Vec<Message>>,
     /// The session file, once `start_transcript` has opened one.
     transcript: Mutex<Option<Arc<Transcript>>>,
+    /// Whether this process created the file (rather than reopening one),
+    /// and how many tasks it has run: an untouched new file is removed at the end.
+    fresh_transcript: Mutex<bool>,
+    tasks_run: AtomicUsize,
     /// A note for the worker above its next task, set by a resume.
     lead: Mutex<Option<String>>,
 }
@@ -107,10 +113,13 @@ impl Session {
             when: config.planner.when,
             review_rounds: config.planner.review_rounds,
             mcp: Vec::new(),
+            warnings: Vec::new(),
             servers: Vec::new(),
             allowed: Mutex::new(HashSet::new()),
             messages: Mutex::new(vec![Message::System(prompts::WORKER.into())]),
             transcript: Mutex::new(None),
+            fresh_transcript: Mutex::new(false),
+            tasks_run: AtomicUsize::new(0),
             lead: Mutex::new(None),
         }
     }
@@ -127,6 +136,7 @@ impl Session {
         messages.extend(saved.messages.iter().cloned());
         *self.messages.lock().unwrap() = messages;
         *self.transcript.lock().unwrap() = Some(Arc::new(t));
+        *self.fresh_transcript.lock().unwrap() = false;
         *self.lead.lock().unwrap() = Some(format!(
             "## Resumed\nThis conversation was saved {} and picked up again {}. The project may have changed since: read a file again before editing it, and do not trust earlier tool output to still hold.\n\n{}",
             day_of(&saved.last),
@@ -152,7 +162,20 @@ impl Session {
         )?;
         let id = t.id.clone();
         *self.transcript.lock().unwrap() = Some(Arc::new(t));
+        *self.fresh_transcript.lock().unwrap() = true;
         Ok(id)
+    }
+
+    /// At the end: a session file this process created and never gave a task
+    /// to is removed, so `/resume` lists only sessions that did something.
+    pub fn finish(&self) {
+        let fresh = *self.fresh_transcript.lock().unwrap();
+        if fresh
+            && self.tasks_run.load(Ordering::Relaxed) == 0
+            && let Some(t) = self.transcript.lock().unwrap().take()
+        {
+            let _ = std::fs::remove_file(&t.path);
+        }
     }
 
     pub fn transcript_id(&self) -> Option<String> {
@@ -211,6 +234,7 @@ impl Session {
         let lead = self.lead.lock().unwrap().take();
         let before = messages.len();
         let began = Instant::now();
+        self.tasks_run.fetch_add(1, Ordering::Relaxed);
         self.record(Record::Task {
             at: transcript::now(),
             text: task.to_string(),

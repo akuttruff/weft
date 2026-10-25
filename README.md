@@ -38,7 +38,8 @@ shell commands ask first, and one key answers:
 
 ![weft asking before an edit](docs/approval.png)
 
-Keys: enter sends · ctrl-j (or `\` + enter) for a newline · ↑↓ history · esc
+Keys: enter sends · ctrl-j (or `\` + enter) for a newline · ← → home end (or
+ctrl-a, ctrl-e) move in the input · ↑↓ history · esc
 stops the task · y / a / n answer approvals · ctrl-c twice leaves. `/` opens a
 menu: `/plan <task>` always plans first, `/go <task>` never does, `/think`
 toggles the worker's thinking, `/clear` starts a fresh conversation,
@@ -93,6 +94,10 @@ On a small task that is the difference between a few hundred and a few
 thousand generated tokens.
 
 ## Setup
+
+`weft init` writes a starter config (and a `WEFT.md` in the current folder)
+where they are missing. At startup weft checks that the configured models are
+loaded in LM Studio and says so if one is not. By hand:
 
 ```bash
 cargo install --path .
@@ -158,7 +163,7 @@ A `WEFT.md` in the project root is read at the start of every task and shown
 to the planner, the worker, the reviewer and the scout as your standing
 instructions: how the tests are run, what must never be done, how commits are
 written. `~/.config/weft/WEFT.md` does the same for every project. Keep them
-short; they are in every prompt.
+short; they are in every prompt. `weft init` writes a starter.
 
 ## Approvals
 
@@ -203,6 +208,7 @@ weft resume [id]           # the interface, continuing the last (or the given) s
 weft run "task"            # one task on a plain line printer, then exit (for scripts)
 weft run --session last "task"   # the same, continuing a session (an id or `last`)
 weft sessions              # this folder's sessions
+weft init                  # a starter config and WEFT.md, where missing
 weft -y …                  # approve every tool call without asking
 weft --think …             # let the worker think before each step
 weft probe                 # ask both models one question; shows each route working

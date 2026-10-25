@@ -171,6 +171,46 @@ impl Endpoint {
     }
 }
 
+/// The models LM Studio has loaded right now. `/api/v0/models` lists every
+/// model it knows with a `state`; the OpenAI-style list does not say.
+pub async fn loaded_models(endpoint: &Endpoint) -> Result<Vec<String>, LmError> {
+    let client = reqwest::Client::new();
+    let mut req = client.get(format!(
+        "{}/api/v0/models",
+        endpoint.url.trim_end_matches('/')
+    ));
+    if let Some(token) = &endpoint.api_token {
+        req = req.bearer_auth(token.trim());
+    }
+    let res = req.send().await.map_err(|source| LmError::Unreachable {
+        url: endpoint.url.clone(),
+        source,
+    })?;
+    if !res.status().is_success() {
+        let status = res.status().as_u16();
+        let text = res.text().await.unwrap_or_default();
+        return Err(LmError::Http {
+            status,
+            detail: http_detail(&text),
+        });
+    }
+    let body: Value = res
+        .json()
+        .await
+        .map_err(|e| LmError::Stream(e.to_string()))?;
+    let loaded = body["data"]
+        .as_array()
+        .map(|models| {
+            models
+                .iter()
+                .filter(|m| m["state"].as_str() == Some("loaded"))
+                .filter_map(|m| m["id"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(loaded)
+}
+
 /// Send a request and hand back the response, or a readable error.
 async fn send(
     endpoint: &Endpoint,

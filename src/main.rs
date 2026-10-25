@@ -5,7 +5,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -71,7 +71,54 @@ enum Command {
     Mcp,
     /// List this folder's earlier sessions.
     Sessions,
+    /// Write a starter config and a WEFT.md for this folder, where missing.
+    Init,
 }
+
+const CONFIG_TEMPLATE: &str = r#"# weft: which model plays which role. See the README for every setting.
+[lm_studio]
+url = "http://127.0.0.1:1234"
+# api_token = "..."           # or export LM_API_TOKEN
+
+[planner]
+model = "qwen/qwen3.8-27b"    # plans and reviews, on the chat route
+plan_effort = "medium"        # low | medium | xhigh
+review_effort = "medium"
+when = "auto"                 # auto | always | never
+review_rounds = 1
+
+[worker]
+model = "qwen3.5-122b-a10b"   # runs the tools, on the raw route
+thinking = false
+
+[scout]
+# model = "qwen/qwen3.5-9b"   # answers "where is X?"; default: the worker's model
+
+[compact]
+at = 48000                    # fold the conversation at this many tokens; 0 never
+window = 65536                # the worker's context window
+
+[approve]                     # tool calls that never ask
+commands = ["cargo test", "cargo build", "cargo clippy", "git status", "git diff", "git log", "ls"]
+"#;
+
+const WEFT_TEMPLATE: &str = r#"# Notes for weft
+
+Standing instructions for every task in this project. Keep it short: this file
+is in every prompt.
+
+## Running things
+- Tests:
+- Build or type-check:
+
+## Rules
+- Never:
+- Always:
+
+## Conventions
+- Commit messages:
+- Code style:
+"#;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -80,6 +127,10 @@ async fn main() -> Result<()> {
         Some(p) => p,
         None => Config::path()?,
     };
+    // `init` writes the config, so it cannot wait for one to load.
+    if matches!(args.command, Some(Command::Init)) {
+        return init(&config_file);
+    }
     let config = Config::load(&config_file)?;
     let think = args.think || config.worker.thinking;
 
@@ -87,6 +138,7 @@ async fn main() -> Result<()> {
         None | Some(Command::Resume { .. }) => {
             let mut session = Session::new(&config, std::env::current_dir()?);
             session.attach_mcp(connect_mcp().await?);
+            check_models(&config, &mut session).await;
             let resume = match args.command {
                 Some(Command::Resume { id }) => {
                     Some(saved(&session, id.as_deref().unwrap_or("last"))?)
@@ -96,7 +148,10 @@ async fn main() -> Result<()> {
                     None
                 }
             };
-            weft::ui::run(Arc::new(session), args.yes, think, resume).await
+            let session = Arc::new(session);
+            let result = weft::ui::run(session.clone(), args.yes, think, resume).await;
+            session.finish();
+            result
         }
         Some(Command::Run {
             task,
@@ -104,6 +159,10 @@ async fn main() -> Result<()> {
         }) => {
             let mut session = Session::new(&config, std::env::current_dir()?);
             session.attach_mcp(connect_mcp().await?);
+            check_models(&config, &mut session).await;
+            for warning in &session.warnings {
+                eprintln!("\x1b[33m{warning}\x1b[0m");
+            }
             match &which {
                 Some(which) => {
                     let saved = saved(&session, which)?;
@@ -122,10 +181,13 @@ async fn main() -> Result<()> {
                     eprintln!("\x1b[31mmcp {}: {e}\x1b[0m", status.name);
                 }
             }
-            run_once(&session, task, args.yes, think).await
+            let result = run_once(&session, task, args.yes, think).await;
+            session.finish();
+            result
         }
         Some(Command::Probe { question }) => probe(&config, question, args.think).await,
         Some(Command::Tool { name, args }) => tool(&config, name, args).await,
+        Some(Command::Init) => unreachable!("handled before the config loads"),
         Some(Command::Sessions) => {
             let dir = transcript::dir_for(&std::env::current_dir()?)?;
             let all = transcript::list(&dir)?;
@@ -176,6 +238,75 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+/// Write the starter files that are missing, and say which.
+fn init(config_file: &PathBuf) -> Result<()> {
+    if config_file.exists() {
+        println!("config: {} is already there", config_file.display());
+    } else {
+        if let Some(dir) = config_file.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(config_file, CONFIG_TEMPLATE)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(config_file, std::fs::Permissions::from_mode(0o600))?;
+        }
+        println!(
+            "config: wrote {}; set the models and the token",
+            config_file.display()
+        );
+    }
+    let notes = std::env::current_dir()?.join("WEFT.md");
+    if notes.exists() {
+        println!("notes:  {} is already there", notes.display());
+    } else {
+        std::fs::write(&notes, WEFT_TEMPLATE)?;
+        println!(
+            "notes:  wrote {}; fill in how this project is run",
+            notes.display()
+        );
+    }
+    Ok(())
+}
+
+/// Warn, at the start, about a configured model LM Studio has not loaded.
+async fn check_models(config: &Config, session: &mut Session) {
+    let endpoint = Endpoint {
+        url: config.lm_studio.url.clone(),
+        api_token: config.lm_studio.api_token.clone(),
+        model: String::new(),
+    };
+    let mut wanted = vec![
+        config.planner.model.clone(),
+        config.worker.model.clone(),
+        session.scout_name().to_string(),
+    ];
+    wanted.dedup();
+    match tokio::time::timeout(Duration::from_secs(3), weft::lm::loaded_models(&endpoint)).await {
+        Ok(Ok(loaded)) => {
+            for model in wanted {
+                if !loaded.contains(&model) {
+                    session.warnings.push(format!(
+                        "{model} is not loaded in LM Studio (loaded: {})",
+                        if loaded.is_empty() {
+                            "nothing".to_string()
+                        } else {
+                            loaded.join(", ")
+                        }
+                    ));
+                }
+            }
+        }
+        Ok(Err(e)) => session
+            .warnings
+            .push(format!("could not list LM Studio's models: {e}")),
+        Err(_) => session
+            .warnings
+            .push("LM Studio did not answer within 3 seconds".into()),
     }
 }
 
