@@ -1,8 +1,10 @@
-//! `weft`: run it in a repository to start a session; `weft run "task"` does
-//! one task and exits. `probe` and `tool` are for poking at the pieces.
+//! `weft`: run it in a repository and you are in a session. `weft run "task"`
+//! does one task on a plain line printer and exits; `probe` and `tool` poke
+//! at the pieces.
 
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -11,13 +13,14 @@ use clap::{Parser, Subcommand};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
-use weft::agent::tandem::{Mode, Tandem};
+use weft::agent::tandem::Mode;
 use weft::agent::worker::WorkerError;
-use weft::agent::{AgentEvent, Approver, Decision, Role, Yes, prompts};
-use weft::config::{Config, PlanWhen};
+use weft::agent::{AgentEvent, Approver, Decision, Role, Yes};
+use weft::config::Config;
 use weft::lm::chat::ChatModel;
 use weft::lm::raw::RawModel;
 use weft::lm::{Endpoint, Message, Request, StreamEvent, ToolCall, ToolSpec};
+use weft::session::Session;
 use weft::tools::{Ctx, Registry};
 
 #[derive(Parser)]
@@ -41,7 +44,7 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Give the worker one task in the current folder and exit when it is done.
+    /// One task in the current folder, printed line by line, then exit.
     Run { task: String },
     /// Ask both models one question and show how each answers.
     Probe {
@@ -64,206 +67,73 @@ async fn main() -> Result<()> {
         None => Config::path()?,
     };
     let config = Config::load(&config_file)?;
+    let think = args.think || config.worker.thinking;
 
     match args.command {
         None => {
-            Session::new(&config, args.yes, args.think)?
-                .interactive()
-                .await
+            let session = Arc::new(Session::new(&config, std::env::current_dir()?));
+            weft::ui::run(session, args.yes, think).await
         }
         Some(Command::Run { task }) => {
-            let mut session = Session::new(&config, args.yes, args.think)?;
-            session.run(task, Mode::Auto).await
+            let session = Session::new(&config, std::env::current_dir()?);
+            run_once(&session, task, args.yes, think).await
         }
         Some(Command::Probe { question }) => probe(&config, question, args.think).await,
         Some(Command::Tool { name, args }) => tool(name, args).await,
     }
 }
 
-/// One conversation with the worker in one folder. Tasks given one after
-/// another share the conversation, so "now do the same for X" works.
-struct Session {
-    planner: ChatModel,
-    reviewer: ChatModel,
-    worker: RawModel,
-    worker_thinking: RawModel,
-    /// Use the thinking worker for the main work too (`--think`, `/think`).
-    think: bool,
-    when: PlanWhen,
-    review_rounds: u8,
-    registry: Registry,
-    ctx: Ctx,
-    approver: Box<dyn Approver>,
-    allowed: std::collections::HashSet<String>,
-    messages: Vec<Message>,
-}
-
-impl Session {
-    fn new(config: &Config, yes: bool, think: bool) -> Result<Self> {
-        let endpoint = |model: &str| Endpoint {
-            url: config.lm_studio.url.clone(),
-            api_token: config.lm_studio.api_token.clone(),
-            model: model.to_string(),
-        };
-        let approver: Box<dyn Approver> = if yes {
-            Box::new(Yes)
-        } else {
-            Box::new(Terminal)
-        };
-        Ok(Self {
-            planner: ChatModel::new(
-                endpoint(&config.planner.model),
-                Some(config.planner.plan_effort),
-            ),
-            reviewer: ChatModel::new(
-                endpoint(&config.planner.model),
-                Some(config.planner.review_effort),
-            ),
-            worker: RawModel::new(endpoint(&config.worker.model), false),
-            worker_thinking: RawModel::new(endpoint(&config.worker.model), true),
-            think: think || config.worker.thinking,
-            when: config.planner.when,
-            review_rounds: config.planner.review_rounds,
-            registry: Registry::builtin(),
-            ctx: Ctx {
-                root: std::env::current_dir()?,
-            },
-            approver,
-            allowed: Default::default(),
-            messages: vec![Message::System(prompts::WORKER.into())],
+/// One task on the plain printer: for scripts and for watching the raw stream.
+async fn run_once(session: &Session, task: String, yes: bool, think: bool) -> Result<()> {
+    let (events, rx) = tokio::sync::mpsc::channel::<AgentEvent>(256);
+    let printer = tokio::spawn(print_events(rx));
+    let cancel = CancellationToken::new();
+    let on_ctrl_c = {
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            cancel.cancel();
         })
-    }
+    };
+    let approver: Box<dyn Approver> = if yes {
+        Box::new(Yes)
+    } else {
+        Box::new(Terminal)
+    };
+    let began = Instant::now();
+    let result = session
+        .run_task(&task, Mode::Auto, think, approver.as_ref(), events, cancel)
+        .await;
+    on_ctrl_c.abort();
+    let _ = printer.await;
 
-    /// Read tasks from the terminal until `/quit` or Ctrl-D.
-    async fn interactive(mut self) -> Result<()> {
-        println!(
-            "\x1b[1mweft\x1b[0m · {} plans and reviews · {} works · in {}\n\x1b[2m/plan <task> always plans first · /go <task> never does · /think toggles the worker's thinking · /clear starts a fresh conversation · /quit leaves\x1b[0m\n",
-            self.planner.endpoint.model,
-            self.worker.endpoint.model,
-            self.ctx.root.display()
-        );
-        loop {
-            let Some(line) = read_line("\x1b[1m>\x1b[0m ").await else {
-                break;
-            };
-            let line = line.trim().to_string();
-            let (command, rest) = match line.split_once(char::is_whitespace) {
-                Some((c, r)) if c.starts_with('/') => (c, r.trim()),
-                _ => (line.as_str(), ""),
-            };
-            match command {
-                "" => continue,
-                "/quit" | "/exit" | "/q" => break,
-                "/think" => {
-                    self.think = !self.think;
-                    println!(
-                        "\x1b[2mthinking {}\x1b[0m",
-                        if self.think { "on" } else { "off" }
-                    );
-                }
-                "/clear" => {
-                    self.messages.truncate(1);
-                    println!("\x1b[2mfresh conversation\x1b[0m");
-                }
-                "/plan" | "/go" if rest.is_empty() => {
-                    println!("\x1b[2musage: {command} <task>\x1b[0m")
-                }
-                "/plan" | "/go" => {
-                    let mode = if command == "/plan" {
-                        Mode::Plan
-                    } else {
-                        Mode::Go
-                    };
-                    if let Err(e) = self.run(rest.to_string(), mode).await {
-                        println!("\x1b[31m{e:#}\x1b[0m");
-                    }
-                }
-                _ if line.starts_with('/') => println!("\x1b[2munknown command {line}\x1b[0m"),
-                _ => {
-                    if let Err(e) = self.run(line.clone(), Mode::Auto).await {
-                        println!("\x1b[31m{e:#}\x1b[0m");
-                    }
-                }
-            }
-            println!();
+    let outcome = match result {
+        Ok(o) => o,
+        Err(WorkerError::Cancelled) => {
+            println!("\n\x1b[2mstopped\x1b[0m");
+            return Ok(());
         }
-        Ok(())
-    }
-
-    /// One task through the tandem, printing what happens.
-    async fn run(&mut self, task: String, mode: Mode) -> Result<()> {
-        let (events, rx) = tokio::sync::mpsc::channel::<AgentEvent>(256);
-        let printer = tokio::spawn(print_events(rx));
-        let cancel = CancellationToken::new();
-        let on_ctrl_c = {
-            let cancel = cancel.clone();
-            tokio::spawn(async move {
-                let _ = tokio::signal::ctrl_c().await;
-                cancel.cancel();
-            })
-        };
-
-        let worker: &dyn weft::agent::Model = if self.think {
-            &self.worker_thinking
+        Err(e) => return Err(e.into()),
+    };
+    let review = match (outcome.reviews.last(), outcome.fixes_pending) {
+        (None, _) => "",
+        (Some(_), true) => " · review: fixes still pending",
+        (Some((true, _)), false) => " · review: approved",
+        (Some((false, _)), false) => " · review: not approved",
+    };
+    println!(
+        "\n\x1b[2m{} rounds · {:.0}s · planner {} · worker {} tokens · touched: {}{review}\x1b[0m",
+        outcome.rounds,
+        began.elapsed().as_secs_f32(),
+        outcome.planner_usage.prompt_tokens + outcome.planner_usage.completion_tokens,
+        outcome.worker_usage.prompt_tokens + outcome.worker_usage.completion_tokens,
+        if outcome.touched.is_empty() {
+            "nothing".to_string()
         } else {
-            &self.worker
-        };
-        let mut tandem = Tandem {
-            planner: &self.planner,
-            reviewer: &self.reviewer,
-            worker,
-            worker_thinking: &self.worker_thinking,
-            registry: &self.registry,
-            ctx: &self.ctx,
-            approver: self.approver.as_ref(),
-            events,
-            cancel,
-            allowed: std::mem::take(&mut self.allowed),
-            when: self.when,
-            review_rounds: self.review_rounds,
-        };
-        let began = Instant::now();
-        let before = self.messages.len();
-        let result = tandem.run(&task, mode, &mut self.messages).await;
-        self.allowed = std::mem::take(&mut tandem.allowed);
-        drop(tandem);
-        on_ctrl_c.abort();
-        let _ = printer.await;
-
-        let outcome = match result {
-            Ok(o) => o,
-            Err(WorkerError::Cancelled) => {
-                println!("\n\x1b[2mstopped\x1b[0m");
-                // Keep only whole turns: drop a trailing user message with no answer.
-                if matches!(self.messages.last(), Some(Message::User(_)))
-                    && self.messages.len() > before
-                {
-                    self.messages.pop();
-                }
-                return Ok(());
-            }
-            Err(e) => return Err(e.into()),
-        };
-        let review = match (outcome.reviews.last(), outcome.fixes_pending) {
-            (None, _) => String::new(),
-            (Some(_), true) => " · review: fixes still pending".to_string(),
-            (Some((true, _)), false) => " · review: approved".to_string(),
-            (Some((false, _)), false) => " · review: not approved".to_string(),
-        };
-        println!(
-            "\n\x1b[2m{} rounds · {:.0}s · planner {} · worker {} tokens · touched: {}{review}\x1b[0m",
-            outcome.rounds,
-            began.elapsed().as_secs_f32(),
-            outcome.planner_usage.prompt_tokens + outcome.planner_usage.completion_tokens,
-            outcome.worker_usage.prompt_tokens + outcome.worker_usage.completion_tokens,
-            if outcome.touched.is_empty() {
-                "nothing".to_string()
-            } else {
-                outcome.touched.join(", ")
-            }
-        );
-        Ok(())
-    }
+            outcome.touched.join(", ")
+        }
+    );
+    Ok(())
 }
 
 /// A line from the terminal, or `None` at end of input (Ctrl-D) or Ctrl-C.

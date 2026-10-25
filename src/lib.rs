@@ -7,4 +7,6 @@
 pub mod agent;
 pub mod config;
 pub mod lm;
+pub mod session;
 pub mod tools;
+pub mod ui;
