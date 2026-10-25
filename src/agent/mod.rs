@@ -128,10 +128,24 @@ pub enum Decision {
     No,
 }
 
+/// The answer to "shall the worker follow this plan?".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanDecision {
+    Go,
+    Stop,
+    /// Notes for the planner; it writes the plan again.
+    Revise(String),
+}
+
 /// Whoever answers approval questions: the terminal, or a test.
 #[async_trait]
 pub trait Approver: Send + Sync {
     async fn ask(&self, what: &str) -> Decision;
+
+    /// The plan is on the screen; go, stop, or send notes back to the planner.
+    async fn review_plan(&self, _plan: &str) -> PlanDecision {
+        PlanDecision::Go
+    }
 }
 
 /// Approves everything. For tests and `--yes`.

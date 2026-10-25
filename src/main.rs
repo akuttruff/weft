@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use weft::agent::tandem::Mode;
 use weft::agent::worker::WorkerError;
-use weft::agent::{AgentEvent, Approver, Decision, Role, Yes};
+use weft::agent::{AgentEvent, Approver, Decision, PlanDecision, Role, Yes};
 use weft::config::Config;
 use weft::lm::chat::ChatModel;
 use weft::lm::raw::RawModel;
@@ -413,6 +413,15 @@ impl Approver for Terminal {
             Some("y") | Some("yes") => Decision::Once,
             Some("a") | Some("always") => Decision::Always,
             _ => Decision::No,
+        }
+    }
+
+    async fn review_plan(&self, _plan: &str) -> PlanDecision {
+        let prompt = "\n\x1b[33m?\x1b[0m Follow this plan?  [enter] go  [n] stop  or type notes to revise it  ";
+        match read_line(prompt).await.as_deref().map(str::trim) {
+            Some("") | Some("y") | Some("yes") | Some("go") => PlanDecision::Go,
+            None | Some("n") | Some("no") | Some("stop") => PlanDecision::Stop,
+            Some(notes) => PlanDecision::Revise(notes.to_string()),
         }
     }
 }

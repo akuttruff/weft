@@ -82,6 +82,20 @@ pub struct Planner {
     /// How many times the reviewer may send the worker back. 0 turns review off.
     #[serde(default = "default_review_rounds")]
     pub review_rounds: u8,
+    /// When the plan waits for your go-ahead before the worker starts.
+    #[serde(default)]
+    pub confirm: Confirm,
+}
+
+/// `asked`: only a `/plan` task pauses on its plan. `always`: every plan
+/// does. `never`: the worker always starts at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Confirm {
+    #[default]
+    Asked,
+    Always,
+    Never,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -165,6 +179,7 @@ model = "qwen3.5-122b-a10b"
         assert_eq!(config.planner.review_effort, Effort::Low);
         assert_eq!(config.planner.when, PlanWhen::Auto);
         assert_eq!(config.planner.review_rounds, 1);
+        assert_eq!(config.planner.confirm, Confirm::Asked);
         assert!(!config.worker.thinking);
         assert_eq!(config.scout.model, None);
         assert_eq!(config.scout.effort, None);

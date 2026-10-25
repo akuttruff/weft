@@ -8,8 +8,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::worker::{MAX_ROUNDS, Outcome, Worker, WorkerError};
-use super::{AgentEvent, Approver, Events, Model, Role, Yes, prompts};
-use crate::config::PlanWhen;
+use super::{AgentEvent, Approver, Events, Model, PlanDecision, Role, Yes, prompts};
+use crate::config::{Confirm, PlanWhen};
 use crate::lm::{Message, Usage};
 use crate::tools::{Ctx, Registry};
 
@@ -17,6 +17,8 @@ use crate::tools::{Ctx, Registry};
 const PLANNER_ROUNDS: usize = 8;
 /// The diff shown to the reviewer is cut here, in characters.
 const DIFF_LIMIT: usize = 30_000;
+/// How many times the user may send a plan back with notes.
+const PLAN_REVISIONS: usize = 3;
 
 /// Whether to plan this task: the caller's say, or triage decides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +63,8 @@ pub struct Tandem<'a> {
     pub allowed: HashSet<String>,
     pub when: PlanWhen,
     pub review_rounds: u8,
+    /// When a plan waits for the user before the worker starts.
+    pub confirm: Confirm,
     /// Text put above this task when the conversation is not fresh: the
     /// note a resumed session starts with. Empty most of the time.
     pub lead: String,
@@ -98,12 +102,49 @@ impl Tandem<'_> {
                     Message::System(prompts::PLANNER.into()),
                     Message::User(with_earlier(task, Some(&context))),
                 ];
-                let plan = planner.run(&mut convo).await?;
+                let mut plan = planner.run(&mut convo).await?;
                 out.planner_usage = add(out.planner_usage, plan.usage);
                 self.emit(AgentEvent::Plan {
                     text: plan.answer.clone(),
                 })
                 .await;
+
+                // Plan mode: the user reads the plan first and may send it
+                // back with notes a few times, or stop here.
+                let pause = match self.confirm {
+                    Confirm::Always => true,
+                    Confirm::Never => false,
+                    Confirm::Asked => mode == Mode::Plan,
+                };
+                let mut revisions = 0;
+                if pause {
+                    loop {
+                        match self.approver.review_plan(&plan.answer).await {
+                            PlanDecision::Go => break,
+                            PlanDecision::Stop => {
+                                out.plan = Some(plan.answer);
+                                out.answer = "Stopped at the plan.".into();
+                                return Ok(out);
+                            }
+                            PlanDecision::Revise(notes) => {
+                                revisions += 1;
+                                self.phase("planning").await;
+                                convo.push(Message::User(format!(
+                                    "The user read the plan and says:\n{notes}\n\nRevise the plan to suit and write it out in full again, in the same shape."
+                                )));
+                                plan = planner.run(&mut convo).await?;
+                                out.planner_usage = add(out.planner_usage, plan.usage);
+                                self.emit(AgentEvent::Plan {
+                                    text: plan.answer.clone(),
+                                })
+                                .await;
+                                if revisions >= PLAN_REVISIONS {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
                 Some(plan.answer)
             }
         };
@@ -702,6 +743,7 @@ mod tests {
             review_rounds: 2,
             lead: String::new(),
             window: crate::config::DEFAULT_WINDOW,
+            confirm: Confirm::Asked,
         };
         let mut messages = vec![Message::System("sys".into())];
         let out = tandem
@@ -790,6 +832,7 @@ mod tests {
             allowed: HashSet::new(),
             when: PlanWhen::Always,
             review_rounds: 1,
+            confirm: Confirm::Asked,
             lead: String::new(),
             window: crate::config::DEFAULT_WINDOW,
         };
@@ -826,6 +869,7 @@ mod tests {
             allowed: HashSet::new(),
             when: PlanWhen::Always,
             review_rounds: 1,
+            confirm: Confirm::Asked,
             lead: String::new(),
             window: crate::config::DEFAULT_WINDOW,
         };
@@ -957,5 +1001,77 @@ mod tests {
         std::fs::write(dir.path().join("n.txt"), "new\n").unwrap();
         let d = diff_of(dir.path(), &["n.txt".into(), "missing.txt".into()]).await;
         assert_eq!(d, "--- new or untracked file: n.txt\nnew\n\n");
+    }
+    /// Answers plan reviews from a script.
+    struct PlanScript(Mutex<Vec<PlanDecision>>);
+
+    #[async_trait]
+    impl Approver for PlanScript {
+        async fn ask(&self, _what: &str) -> super::super::Decision {
+            super::super::Decision::Always
+        }
+        async fn review_plan(&self, _plan: &str) -> PlanDecision {
+            self.0.lock().unwrap().remove(0)
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_mode_revises_on_notes_and_stops_before_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(dir.path().to_path_buf());
+        let registry = Registry::builtin();
+        let planner = Scripted::new(
+            "planner",
+            vec![
+                Scripted::text("## Plan\n1. first draft"),
+                Scripted::text("## Plan\n1. second draft"),
+            ],
+        );
+        let worker = Scripted::new("worker", vec![]); // never asked
+        let (events, mut rx) = mpsc::channel(64);
+        let approver = PlanScript(Mutex::new(vec![
+            PlanDecision::Revise("skip the tests".into()),
+            PlanDecision::Stop,
+        ]));
+        let mut tandem = Tandem {
+            planner: &planner,
+            reviewer: &planner,
+            worker: &worker,
+            worker_thinking: &worker,
+            registry: &registry,
+            planner_registry: &registry,
+            ctx: &ctx,
+            approver: &approver,
+            events,
+            cancel: CancellationToken::new(),
+            allowed: HashSet::new(),
+            when: PlanWhen::Auto,
+            review_rounds: 1,
+            confirm: Confirm::Asked,
+            lead: String::new(),
+            window: crate::config::DEFAULT_WINDOW,
+        };
+        let mut messages = vec![Message::System("sys".into())];
+        let out = tandem
+            .run("tidy up", Mode::Plan, &mut messages)
+            .await
+            .unwrap();
+        assert_eq!(out.answer, "Stopped at the plan.");
+        assert_eq!(out.plan.as_deref(), Some("## Plan\n1. second draft"));
+        let seen = planner.seen.lock().unwrap().clone();
+        assert!(seen[1].contains("skip the tests"), "{}", seen[1]);
+        assert_eq!(
+            messages.len(),
+            1,
+            "the worker's conversation was not touched"
+        );
+        drop(tandem);
+        let mut plans = 0;
+        while let Some(evt) = rx.recv().await {
+            if matches!(evt, AgentEvent::Plan { .. }) {
+                plans += 1;
+            }
+        }
+        assert_eq!(plans, 2);
     }
 }

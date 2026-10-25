@@ -41,7 +41,8 @@ shell commands ask first, and one key answers:
 Keys: enter sends · ctrl-j (or `\` + enter) for a newline · ← → home end (or
 ctrl-a, ctrl-e) move in the input · ↑↓ history · esc
 stops the task · y / a / n answer approvals · ctrl-c twice leaves. `/` opens a
-menu: `/plan <task>` always plans first, `/go <task>` never does, `/think`
+menu: `/plan <task>` plans first and waits for your word on the plan, `/go
+<task>` never plans, `/think`
 toggles the worker's thinking, `/clear` starts a fresh conversation,
 `/resume` lists this folder's earlier sessions and `/resume 2` picks one up,
 `/compact` folds the earlier tasks into a note now, `/cost` shows the tokens
@@ -65,6 +66,12 @@ used, `/mcp` lists the MCP servers and their tools, `/help`, `/quit`.
 
 Tasks given one after another in a session share the worker's conversation, so
 "now do the same for X" works.
+
+**Plan mode.** A task given as `/plan <task>` stops once the plan is on the
+screen. Enter lets the worker go; typing notes and pressing enter sends the
+plan back to the planner, which writes it again with your notes in mind, up to
+three times; esc stops the task there. `confirm = "always"` in the config does
+this for every plan, `"never"` for none.
 
 **The scout.** Both the planner and the worker have a `scout` tool: one
 question about where something lives or how it fits together. A separate model
@@ -112,6 +119,7 @@ model = "qwen/qwen3.8-27b"
 plan_effort = "medium"      # low | medium | xhigh
 review_effort = "low"       # the review is one read of the diff; low is 3x faster than medium
 when = "auto"               # auto | always | never
+confirm = "asked"           # plan waits for your word: asked (/plan only) | always | never
 review_rounds = 1           # 0 turns review off
 
 [worker]

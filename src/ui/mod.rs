@@ -35,7 +35,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::agent::compact::Compacted;
 use crate::agent::tandem::{Mode, TandemOutcome};
 use crate::agent::worker::WorkerError;
-use crate::agent::{AgentEvent, Approver, Decision, Role, Yes};
+use crate::agent::{AgentEvent, Approver, Decision, PlanDecision, Role, Yes};
 use crate::lm::Usage;
 use crate::session::Session;
 use crate::transcript::{self, Saved};
@@ -67,6 +67,10 @@ enum UiMsg {
         what: String,
         reply: oneshot::Sender<Decision>,
     },
+    /// The plan is on the screen; the user says go, stop, or types notes.
+    AskPlan {
+        reply: oneshot::Sender<PlanDecision>,
+    },
     Done(Result<TandemOutcome, WorkerError>),
     Compacted(Result<Compacted, WorkerError>),
 }
@@ -93,6 +97,14 @@ impl Approver for UiApprover {
         }
         answer.await.unwrap_or(Decision::No)
     }
+
+    async fn review_plan(&self, _plan: &str) -> PlanDecision {
+        let (reply, answer) = oneshot::channel();
+        if self.tx.send(UiMsg::AskPlan { reply }).await.is_err() {
+            return PlanDecision::Stop;
+        }
+        answer.await.unwrap_or(PlanDecision::Stop)
+    }
 }
 
 /// A task in progress.
@@ -118,6 +130,8 @@ struct App {
     menu_at: usize,
     running: Option<Running>,
     ask: Option<(String, oneshot::Sender<Decision>)>,
+    /// A plan waiting for the user's word; the input box takes the notes.
+    plan_ask: Option<oneshot::Sender<PlanDecision>>,
     quit_armed: bool,
     quit: bool,
     frame: usize,
@@ -177,6 +191,7 @@ async fn event_loop(
         menu_at: 0,
         running: None,
         ask: None,
+        plan_ask: None,
         quit_armed: false,
         quit: false,
         frame: 0,
@@ -315,6 +330,10 @@ impl App {
     fn on_msg(&mut self, msg: UiMsg) {
         match msg {
             UiMsg::Ask { what, reply } => self.ask = Some((what, reply)),
+            UiMsg::AskPlan { reply } => {
+                self.flush_text();
+                self.plan_ask = Some(reply);
+            }
             UiMsg::Done(result) => self.on_done(result),
             UiMsg::Compacted(result) => {
                 self.running = None;
@@ -498,6 +517,30 @@ impl App {
     fn on_key(&mut self, key: KeyEvent, tx: &mpsc::Sender<UiMsg>) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
+        // A plan waiting for a word: enter goes, esc stops, typed notes + enter
+        // send it back. Everything else edits the notes as usual.
+        if self.plan_ask.is_some() {
+            let alt = key.modifiers.contains(KeyModifiers::ALT);
+            match (key.code, ctrl, alt) {
+                (KeyCode::Enter, false, false) => {
+                    let notes = self.input.trim().to_string();
+                    self.input.clear();
+                    self.answer_plan(if notes.is_empty() {
+                        PlanDecision::Go
+                    } else {
+                        PlanDecision::Revise(notes)
+                    });
+                    return;
+                }
+                (KeyCode::Esc, _, _) | (KeyCode::Char('c'), true, _) => {
+                    self.input.clear();
+                    self.answer_plan(PlanDecision::Stop);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         // An approval question takes the keyboard until it is answered.
         if let Some((_, _)) = &self.ask {
             let decision = match key.code {
@@ -602,6 +645,19 @@ impl App {
         if let Some(r) = &self.running {
             r.cancel.cancel();
         }
+    }
+
+    fn answer_plan(&mut self, decision: PlanDecision) {
+        let Some(reply) = self.plan_ask.take() else {
+            return;
+        };
+        let note = match &decision {
+            PlanDecision::Go => "  plan: go".to_string(),
+            PlanDecision::Stop => "  plan: stop".to_string(),
+            PlanDecision::Revise(notes) => format!("  plan: revise · {notes}"),
+        };
+        self.push(view::note_line(&note));
+        let _ = reply.send(decision);
     }
 
     /// Walk the history with the arrow keys.
@@ -946,6 +1002,16 @@ impl App {
     }
 
     fn status_line(&self) -> Line<'static> {
+        if self.plan_ask.is_some() {
+            return Line::from(vec![
+                Span::styled("? ", Style::new().fg(Color::Yellow).bold()),
+                Span::styled("Follow this plan?  ", Style::new().fg(Color::Yellow)),
+                Span::styled(
+                    "enter to go · type notes + enter to revise · esc to stop",
+                    Style::new().dim(),
+                ),
+            ]);
+        }
         if let Some((what, _)) = &self.ask {
             return Line::from(vec![
                 Span::styled("? ", Style::new().fg(Color::Yellow).bold()),

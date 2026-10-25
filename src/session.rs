@@ -15,7 +15,7 @@ use crate::agent::scout::Scout;
 use crate::agent::tandem::{Mode, Tandem, TandemOutcome, snapshot};
 use crate::agent::worker::WorkerError;
 use crate::agent::{AgentEvent, Approver, Events, Model, Role, prompts};
-use crate::config::{Config, PlanWhen};
+use crate::config::{Config, Confirm, PlanWhen};
 use crate::lm::chat::ChatModel;
 use crate::lm::raw::RawModel;
 use crate::lm::{Endpoint, Message};
@@ -42,6 +42,7 @@ pub struct Session {
     pub ctx: Ctx,
     pub when: PlanWhen,
     pub review_rounds: u8,
+    pub confirm: Confirm,
     /// The MCP servers that were configured and how each came up.
     pub mcp: Vec<mcp::Status>,
     /// Things worth a line on the screen at the start: a model not loaded.
@@ -112,6 +113,7 @@ impl Session {
             ctx: Ctx::new(root),
             when: config.planner.when,
             review_rounds: config.planner.review_rounds,
+            confirm: config.planner.confirm,
             mcp: Vec::new(),
             warnings: Vec::new(),
             servers: Vec::new(),
@@ -295,6 +297,7 @@ impl Session {
             allowed,
             when: self.when,
             review_rounds: self.review_rounds,
+            confirm: self.confirm,
             lead: lead.clone().unwrap_or_default(),
             window: self.window,
         };
