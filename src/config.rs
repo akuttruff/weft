@@ -12,6 +12,8 @@ pub struct Config {
     pub lm_studio: LmStudio,
     pub planner: Planner,
     pub worker: Worker,
+    #[serde(default)]
+    pub scout: Scout,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -64,6 +66,27 @@ pub struct Worker {
     pub thinking: bool,
 }
 
+/// The model that answers the scout's questions: the worker's by default,
+/// thinking off, because finding a file wants speed, not deep thought.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Scout {
+    /// Default: the worker's model.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The reasoning effort when `model` names a model on the chat route.
+    #[serde(default = "Effort::low")]
+    pub effort: Effort,
+}
+
+impl Default for Scout {
+    fn default() -> Self {
+        Self {
+            model: None,
+            effort: Effort::Low,
+        }
+    }
+}
+
 fn default_url() -> String {
     "http://127.0.0.1:1234".to_string()
 }
@@ -109,5 +132,7 @@ model = "qwen3.5-122b-a10b"
         assert_eq!(config.planner.when, PlanWhen::Auto);
         assert_eq!(config.planner.review_rounds, 1);
         assert!(!config.worker.thinking);
+        assert_eq!(config.scout.model, None);
+        assert_eq!(config.scout.effort, Effort::Low);
     }
 }

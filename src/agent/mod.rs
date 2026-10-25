@@ -2,6 +2,7 @@
 //! whatever is drawing the screen.
 
 pub mod prompts;
+pub mod scout;
 pub mod tandem;
 pub mod worker;
 
@@ -17,6 +18,8 @@ use crate::lm::{LmError, Reply, Request, Sender, Usage};
 pub enum Role {
     Planner,
     Worker,
+    /// The scout: a read-only helper the other two can ask.
+    Scout,
 }
 
 /// A model, whichever route it answers on. The worker loop only needs this.
@@ -152,6 +155,7 @@ pub fn call_summary(name: &str, args: &serde_json::Value) -> String {
             }
             out
         }
+        "scout" => format!("Scout {}", s("question")),
         "edit_file" => format!("Edit {}", s("path")),
         "write_file" => format!("Write {}", s("path")),
         "bash" => format!("Bash {}", s("command").lines().next().unwrap_or("")),

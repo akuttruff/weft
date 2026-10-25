@@ -119,6 +119,7 @@ struct App {
     out: Vec<(Vec<Line<'static>>, Vec<Span<'static>>)>,
     planner_usage: Usage,
     worker_usage: Usage,
+    scout_usage: Usage,
     /// The worker's last prompt size: how full its context is.
     context: u32,
     tasks: usize,
@@ -167,6 +168,7 @@ async fn event_loop(
         out: Vec::new(),
         planner_usage: Usage::default(),
         worker_usage: Usage::default(),
+        scout_usage: Usage::default(),
         context: 0,
         tasks: 0,
         flush_failed: false,
@@ -363,6 +365,7 @@ impl App {
             AgentEvent::TurnEnd { role, usage, .. } => {
                 match role {
                     Role::Planner => self.planner_usage = add(self.planner_usage, usage),
+                    Role::Scout => self.scout_usage = add(self.scout_usage, usage),
                     Role::Worker => {
                         self.worker_usage = add(self.worker_usage, usage);
                         self.context = usage.prompt_tokens + usage.completion_tokens;
@@ -610,11 +613,12 @@ impl App {
                 self.push(view::note_line("fresh conversation"));
             }
             "/cost" => self.push(view::note_line(&format!(
-                "{} tasks · planner {} tokens ({} thinking) · worker {} tokens · context {} of {}",
+                "{} tasks · planner {} tokens ({} thinking) · worker {} tokens · scout {} tokens · context {} of {}",
                 self.tasks,
                 view::k(view::total(self.planner_usage)),
                 view::k(self.planner_usage.reasoning_tokens),
                 view::k(view::total(self.worker_usage)),
+                view::k(view::total(self.scout_usage)),
                 view::k(self.context),
                 view::k(CONTEXT_WINDOW),
             ))),
@@ -836,6 +840,10 @@ impl App {
                 phase,
                 ..
             }) => (self.session.planner_name(), *phase),
+            Some(Running {
+                turn: Some((Role::Scout, _)),
+                ..
+            }) => (self.session.scout_name(), "scouting"),
             Some(r) => (self.session.worker_name(), r.phase),
             None => (self.session.worker_name(), "idle"),
         };

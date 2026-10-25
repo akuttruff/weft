@@ -50,7 +50,10 @@ pub struct Tandem<'a> {
     pub worker: &'a dyn Model,
     /// The worker, thinking on: used for fix rounds.
     pub worker_thinking: &'a dyn Model,
+    /// The worker's tools.
     pub registry: &'a Registry,
+    /// The planner's: looking only, plus the scout.
+    pub planner_registry: &'a Registry,
     pub ctx: &'a Ctx,
     pub approver: &'a dyn Approver,
     pub events: Events,
@@ -80,9 +83,12 @@ impl Tandem<'_> {
             false => None,
             true => {
                 self.phase("planning").await;
-                let read_only = Registry::read_only();
-                let mut planner =
-                    self.looker(self.planner, &read_only, Role::Planner, PLANNER_ROUNDS);
+                let mut planner = self.looker(
+                    self.planner,
+                    self.planner_registry,
+                    Role::Planner,
+                    PLANNER_ROUNDS,
+                );
                 let mut convo = vec![
                     Message::System(prompts::PLANNER.into()),
                     Message::User(with_earlier(task, Some(&context))),
@@ -510,9 +516,7 @@ mod tests {
     async fn plans_works_reviews_and_fixes_once() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
-        let ctx = Ctx {
-            root: dir.path().to_path_buf(),
-        };
+        let ctx = Ctx::new(dir.path().to_path_buf());
         let registry = Registry::builtin();
 
         let planner = Scripted::new(
@@ -551,6 +555,7 @@ mod tests {
             worker: &worker,
             worker_thinking: &worker_thinking,
             registry: &registry,
+            planner_registry: &registry,
             ctx: &ctx,
             approver: &Yes,
             events,
@@ -626,9 +631,7 @@ mod tests {
     #[tokio::test]
     async fn go_skips_the_plan_and_an_answer_only_task_skips_review() {
         let dir = tempfile::tempdir().unwrap();
-        let ctx = Ctx {
-            root: dir.path().to_path_buf(),
-        };
+        let ctx = Ctx::new(dir.path().to_path_buf());
         let registry = Registry::builtin();
         let planner = Scripted::new("planner", vec![]);
         let reviewer = Scripted::new("reviewer", vec![]);
@@ -640,6 +643,7 @@ mod tests {
             worker: &worker,
             worker_thinking: &worker,
             registry: &registry,
+            planner_registry: &registry,
             ctx: &ctx,
             approver: &Yes,
             events,
@@ -661,9 +665,7 @@ mod tests {
     #[tokio::test]
     async fn the_planner_hears_what_came_before() {
         let dir = tempfile::tempdir().unwrap();
-        let ctx = Ctx {
-            root: dir.path().to_path_buf(),
-        };
+        let ctx = Ctx::new(dir.path().to_path_buf());
         let registry = Registry::builtin();
         let planner = Scripted::new("planner", vec![Scripted::text("## Plan\n1. add a test")]);
         let reviewer = Scripted::new("reviewer", vec![]);
@@ -675,6 +677,7 @@ mod tests {
             worker: &worker,
             worker_thinking: &worker,
             registry: &registry,
+            planner_registry: &registry,
             ctx: &ctx,
             approver: &Yes,
             events,

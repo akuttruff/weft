@@ -158,9 +158,7 @@ mod tests {
 
     fn ctx() -> (tempfile::TempDir, Ctx) {
         let dir = tempfile::tempdir().unwrap();
-        let ctx = Ctx {
-            root: dir.path().to_path_buf(),
-        };
+        let ctx = Ctx::new(dir.path().to_path_buf());
         (dir, ctx)
     }
 

@@ -226,9 +226,7 @@ mod tests {
     async fn runs_tools_until_the_model_answers() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
-        let ctx = Ctx {
-            root: dir.path().to_path_buf(),
-        };
+        let ctx = Ctx::new(dir.path().to_path_buf());
         let registry = Registry::builtin();
         let model = Scripted {
             replies: Mutex::new(vec![
@@ -336,9 +334,7 @@ mod tests {
             }
         }
         let dir = tempfile::tempdir().unwrap();
-        let ctx = Ctx {
-            root: dir.path().to_path_buf(),
-        };
+        let ctx = Ctx::new(dir.path().to_path_buf());
         let registry = Registry::builtin();
         let model = Scripted {
             replies: Mutex::new(vec![

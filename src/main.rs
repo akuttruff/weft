@@ -90,7 +90,7 @@ async fn main() -> Result<()> {
             run_once(&session, task, args.yes, think).await
         }
         Some(Command::Probe { question }) => probe(&config, question, args.think).await,
-        Some(Command::Tool { name, args }) => tool(name, args).await,
+        Some(Command::Tool { name, args }) => tool(&config, name, args).await,
         Some(Command::Mcp) => {
             for (status, server) in connect_mcp().await? {
                 match (&status.tools, server) {
@@ -372,6 +372,7 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
                 let who = match role {
                     Role::Planner => "planner",
                     Role::Worker => "worker",
+                    Role::Scout => "scout",
                 };
                 println!(
                     "\x1b[2m  {who} {seconds:.1}s · prompt {} · reasoning {} · answer {}\x1b[0m",
@@ -388,15 +389,18 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
     }
 }
 
-async fn tool(name: String, args: Option<String>) -> Result<()> {
+async fn tool(config: &Config, name: String, args: Option<String>) -> Result<()> {
     let arguments = match args {
         Some(a) => serde_json::from_str(&a).context("the arguments are not JSON")?,
         None => json!({}),
     };
-    let ctx = Ctx {
-        root: std::env::current_dir()?,
+    let ctx = Ctx::new(std::env::current_dir()?);
+    // The scout needs a model, so it comes from a session like the others.
+    let mut registry = if name == "scout" {
+        Session::new(config, ctx.root.clone()).registry
+    } else {
+        Registry::builtin()
     };
-    let mut registry = Registry::builtin();
     let mut servers = Vec::new();
     if name.contains("__") {
         for (_, server) in connect_mcp().await?.into_iter() {

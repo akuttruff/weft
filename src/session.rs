@@ -7,6 +7,7 @@ use std::sync::Mutex;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::scout::Scout;
 use crate::agent::tandem::{Mode, Tandem, TandemOutcome};
 use crate::agent::worker::WorkerError;
 use crate::agent::{Approver, Events, Model, prompts};
@@ -22,7 +23,11 @@ pub struct Session {
     pub reviewer: ChatModel,
     pub worker: RawModel,
     pub worker_thinking: RawModel,
+    /// The worker's tools: built-in, scout, MCP.
     pub registry: Registry,
+    /// The planner's: read-only built-ins and the scout.
+    pub planner_registry: Registry,
+    scout_model: String,
     pub ctx: Ctx,
     pub when: PlanWhen,
     pub review_rounds: u8,
@@ -45,6 +50,30 @@ impl Session {
             api_token: config.lm_studio.api_token.clone(),
             model: model.to_string(),
         };
+        // The scout runs on the worker's model by default: the fast one, on the
+        // raw route with thinking off. A dense model at low effort took close to
+        // three minutes on one question. Another model goes on the chat route.
+        let scout_model = config
+            .scout
+            .model
+            .clone()
+            .unwrap_or_else(|| config.worker.model.clone());
+        // One scout each, so the planner's and the worker's tool sets are independent.
+        let scout = || {
+            let model: Box<dyn Model> = if scout_model == config.worker.model {
+                Box::new(RawModel::new(endpoint(&scout_model), false))
+            } else {
+                Box::new(ChatModel::new(
+                    endpoint(&scout_model),
+                    Some(config.scout.effort),
+                ))
+            };
+            Box::new(Scout::new(model)) as Box<dyn crate::tools::Tool>
+        };
+        let mut registry = Registry::builtin();
+        registry.extend(vec![scout()]);
+        let mut planner_registry = Registry::read_only();
+        planner_registry.extend(vec![scout()]);
         Self {
             planner: ChatModel::new(
                 endpoint(&config.planner.model),
@@ -56,8 +85,10 @@ impl Session {
             ),
             worker: RawModel::new(endpoint(&config.worker.model), false),
             worker_thinking: RawModel::new(endpoint(&config.worker.model), true),
-            registry: Registry::builtin(),
-            ctx: Ctx { root },
+            registry,
+            planner_registry,
+            scout_model,
+            ctx: Ctx::new(root),
             when: config.planner.when,
             review_rounds: config.planner.review_rounds,
             mcp: Vec::new(),
@@ -87,6 +118,10 @@ impl Session {
         &self.worker.endpoint.model
     }
 
+    pub fn scout_name(&self) -> &str {
+        &self.scout_model
+    }
+
     /// Run one task through the tandem. The conversation is taken out for the
     /// duration and put back after; a failed or stopped task leaves it as it was.
     pub async fn run_task(
@@ -107,13 +142,16 @@ impl Session {
         } else {
             &self.worker
         };
+        // The tools learn this task's stop signal and event stream.
+        let ctx = self.ctx.for_task(Some(events.clone()), cancel.clone());
         let mut tandem = Tandem {
             planner: &self.planner,
             reviewer: &self.reviewer,
             worker,
             worker_thinking: &self.worker_thinking,
             registry: &self.registry,
-            ctx: &self.ctx,
+            planner_registry: &self.planner_registry,
+            ctx: &ctx,
             approver,
             events,
             cancel,

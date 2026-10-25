@@ -13,14 +13,39 @@ use std::path::{Component, Path, PathBuf};
 
 use async_trait::async_trait;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
+use crate::agent::Events;
 use crate::lm::{ToolCall, ToolSpec};
 
-/// What the tools know about where they are.
+/// What the tools know about where they are, and about the task they run in.
 #[derive(Debug, Clone)]
 pub struct Ctx {
     /// The project root; nothing outside it may be read or written.
     pub root: PathBuf,
+    /// Cancelled when the user stops the task; a long tool should stop too.
+    pub cancel: CancellationToken,
+    /// Where a tool that runs a model of its own (the scout) reports its turns.
+    pub events: Option<Events>,
+}
+
+impl Ctx {
+    pub fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            cancel: CancellationToken::new(),
+            events: None,
+        }
+    }
+
+    /// The same folder, tied to one task's stop signal and event stream.
+    pub fn for_task(&self, events: Option<Events>, cancel: CancellationToken) -> Self {
+        Self {
+            root: self.root.clone(),
+            cancel,
+            events,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

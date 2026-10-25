@@ -51,8 +51,8 @@ shows the tokens used, `/mcp` lists the MCP servers and their tools, `/help`,
    A question or a one-spot change goes straight to work; anything wider is
    planned first. `/plan <task>` and `/go <task>` override it.
 3. **Plan.** The planner looks at the code with read-only tools (a few searches
-   and reads), then writes a short plan: files and changes, the one command
-   that verifies, pitfalls it noticed.
+   and reads, or a question to the scout), then writes a short plan: files and
+   changes, the one command that verifies, pitfalls it noticed.
 4. **Work.** The worker follows the plan with the full tool set, runs the check,
    and reports what changed as `path:line`.
 5. **Review.** If files were touched, the planner model reads the diff against
@@ -62,6 +62,15 @@ shows the tokens used, `/mcp` lists the MCP servers and their tools, `/help`,
 
 Tasks given one after another in a session share the worker's conversation, so
 "now do the same for X" works.
+
+**The scout.** Both the planner and the worker have a `scout` tool: one
+question about where something lives or how it fits together. A separate model
+run (the worker's model with thinking off by default; `[scout]` in the config
+picks another) searches and reads the project on its own and answers
+with paths, line numbers and a few sentences, never file contents. The files
+it read stay in its context and are thrown away, so the worker's window holds
+only the answer. The models call it themselves; you never ask for it. It shows
+as one `⏺ Scout …` line.
 
 ## Two routes to one server
 
@@ -96,6 +105,10 @@ review_rounds = 1           # 0 turns review off
 [worker]
 model = "qwen3.5-122b-a10b"
 thinking = false            # the planner carries the reasoning; fix rounds think anyway
+
+[scout]                     # optional: the model that answers "where is X?"
+# model = "qwen/qwen3.8-27b"  # default: the worker's, thinking off
+effort = "low"              # used when `model` is one on the chat route
 EOF
 chmod 600 ~/.config/weft/config.toml
 ```
@@ -152,6 +165,7 @@ included. `pkill`, `killall` and force pushes are never run.
 | `edit_file` | Replace one exact passage; must match exactly once; reports `path:line` |
 | `write_file` | New files only |
 | `bash` | Runs in the project root, timeout, last 200 lines of output |
+| `scout` | One where-or-how question, answered by a read-only run of another model |
 | `server__tool` | Any tool of a configured MCP server; asks first |
 
 ## Reading the code to learn Rust
@@ -166,7 +180,9 @@ appears. In order:
 3. **`src/agent/`** — the `Model` trait so tests can script a fake model, the
    worker loop, `tokio::select!` for cancellation, a forwarding task. Then
    `tandem.rs`: the same loop reused for the planner (read-only tools) and the
-   reviewer (no tools), and the verdict parser.
+   reviewer (no tools), and the verdict parser. `scout.rs`: the loop once more,
+   wrapped up as a `Tool` the other models can call, with a forwarding task
+   that filters its events.
 4. **`src/mcp.rs`** — a JSON config with `serde`, servers started together with
    `join_all`, a type alias for a long generic, `Arc` sharing one connection
    between its tools, the same `Tool` trait implemented for someone else's tools.

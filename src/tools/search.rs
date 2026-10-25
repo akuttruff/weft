@@ -115,9 +115,7 @@ mod tests {
     #[tokio::test]
     async fn finds_lines_and_honours_glob() {
         let dir = tempfile::tempdir().unwrap();
-        let ctx = Ctx {
-            root: dir.path().to_path_buf(),
-        };
+        let ctx = Ctx::new(dir.path().to_path_buf());
         std::fs::create_dir_all(ctx.root.join("src")).unwrap();
         std::fs::write(ctx.root.join("src/a.rs"), "fn main() {}\nlet x = 1;\n").unwrap();
         std::fs::write(ctx.root.join("notes.md"), "FN main is here\n").unwrap();
