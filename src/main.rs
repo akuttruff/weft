@@ -48,7 +48,14 @@ struct Args {
 #[derive(Subcommand)]
 enum Command {
     /// One task in the current folder, printed line by line, then exit.
-    Run { task: String },
+    Run {
+        task: String,
+        /// Continue an earlier session: its id, or `last`
+        #[arg(long, value_name = "ID")]
+        session: Option<String>,
+    },
+    /// Pick up this folder's last session, or the one with this id.
+    Resume { id: Option<String> },
     /// Ask both models one question and show how each answers.
     Probe {
         /// The question [default: a small one that invites a tool call]
@@ -77,16 +84,39 @@ async fn main() -> Result<()> {
     let think = args.think || config.worker.thinking;
 
     match args.command {
-        None => {
+        None | Some(Command::Resume { .. }) => {
             let mut session = Session::new(&config, std::env::current_dir()?);
             session.attach_mcp(connect_mcp().await?);
-            start_transcript(&session);
-            weft::ui::run(Arc::new(session), args.yes, think).await
+            let resume = match args.command {
+                Some(Command::Resume { id }) => {
+                    Some(saved(&session, id.as_deref().unwrap_or("last"))?)
+                }
+                _ => {
+                    start_transcript(&session);
+                    None
+                }
+            };
+            weft::ui::run(Arc::new(session), args.yes, think, resume).await
         }
-        Some(Command::Run { task }) => {
+        Some(Command::Run {
+            task,
+            session: which,
+        }) => {
             let mut session = Session::new(&config, std::env::current_dir()?);
             session.attach_mcp(connect_mcp().await?);
-            start_transcript(&session);
+            match &which {
+                Some(which) => {
+                    let saved = saved(&session, which)?;
+                    session.resume(&saved)?;
+                    eprintln!(
+                        "\x1b[2mresumed session {} · {} task{}\x1b[0m",
+                        saved.id,
+                        saved.tasks.len(),
+                        if saved.tasks.len() == 1 { "" } else { "s" }
+                    );
+                }
+                None => start_transcript(&session),
+            }
             for status in &session.mcp {
                 if let Err(e) = &status.tools {
                     eprintln!("\x1b[31mmcp {}: {e}\x1b[0m", status.name);
@@ -147,6 +177,11 @@ async fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// The earlier session `which` names, read from this folder's transcripts.
+fn saved(session: &Session, which: &str) -> Result<transcript::Saved> {
+    transcript::find(&transcript::dir_for(&session.ctx.root)?, which)
 }
 
 /// Keep a transcript of this session; without one the session still runs.

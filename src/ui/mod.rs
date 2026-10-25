@@ -34,6 +34,7 @@ use crate::agent::worker::WorkerError;
 use crate::agent::{AgentEvent, Approver, Decision, Role, Yes};
 use crate::lm::Usage;
 use crate::session::Session;
+use crate::transcript::{self, Saved};
 
 /// Rows of the live area: streamed text, status, the input box, the footer.
 const LIVE_ROWS: u16 = 8;
@@ -48,6 +49,7 @@ const COMMANDS: &[(&str, &str, bool)] = &[
     ("/go", "straight to work, no plan", true),
     ("/think", "toggle the worker's thinking", false),
     ("/clear", "start a fresh conversation", false),
+    ("/resume", "pick up an earlier session", true),
     ("/cost", "tokens used this session", false),
     ("/mcp", "MCP servers and their tools", false),
     ("/help", "keys and commands", false),
@@ -127,9 +129,16 @@ struct App {
     /// The tool call whose result is next: its name for the summary line, its
     /// arguments for the diff under an edit.
     last_tool: (String, serde_json::Value),
+    /// The last `/resume` listing, so `/resume 2` means something.
+    sessions: Vec<Saved>,
 }
 
-pub async fn run(session: Arc<Session>, yes: bool, think: bool) -> Result<()> {
+pub async fn run(
+    session: Arc<Session>,
+    yes: bool,
+    think: bool,
+    resume: Option<Saved>,
+) -> Result<()> {
     // Rust: `try_init_with_options` returns a Result where `init_with_options`
     // would panic; a pipe or a terminal that does not answer gets a sentence
     // instead of a backtrace.
@@ -140,7 +149,7 @@ pub async fn run(session: Arc<Session>, yes: bool, think: bool) -> Result<()> {
         anyhow::anyhow!("weft needs a terminal to draw in ({e}); try `weft run \"task\"` instead")
     })?;
     let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
-    let result = event_loop(&mut terminal, session, yes, think).await;
+    let result = event_loop(&mut terminal, session, yes, think, resume).await;
     let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     result
@@ -151,6 +160,7 @@ async fn event_loop(
     session: Arc<Session>,
     yes: bool,
     think: bool,
+    resume: Option<Saved>,
 ) -> Result<()> {
     let mut app = App {
         session,
@@ -173,6 +183,7 @@ async fn event_loop(
         tasks: 0,
         flush_failed: false,
         last_tool: (String::new(), serde_json::Value::Null),
+        sessions: Vec::new(),
     };
     let (tx, mut rx) = mpsc::channel::<UiMsg>(512);
     let mut keys = EventStream::new();
@@ -198,6 +209,23 @@ async fn event_loop(
     ));
     if !app.session.mcp.is_empty() {
         app.push(view::mcp_summary(&app.session.mcp));
+    }
+    match resume {
+        Some(saved) => app.resume(saved),
+        None => {
+            let earlier = app
+                .sessions_dir()
+                .map(|d| transcript::count(&d))
+                .unwrap_or(0);
+            // The one just started is in that count.
+            if earlier > 1 {
+                app.push(view::note_line(&format!(
+                    "{} earlier session{} in this folder · /resume lists them",
+                    earlier - 1,
+                    if earlier == 2 { "" } else { "s" }
+                )));
+            }
+        }
     }
 
     while !app.quit {
@@ -616,6 +644,32 @@ impl App {
                 self.session.clear();
                 self.push(view::note_line("fresh conversation"));
             }
+            "/resume" if rest.is_empty() => {
+                let me = self.session.transcript_id();
+                match self.sessions_dir().and_then(|d| transcript::list(&d)) {
+                    Ok(all) => {
+                        self.sessions = all.into_iter().filter(|s| Some(&s.id) != me.as_ref()).collect();
+                        let lines = view::session_lines(&self.sessions);
+                        self.push(lines);
+                    }
+                    Err(e) => self.push(view::error_line(&format!("  {e:#}"))),
+                }
+            }
+            "/resume" => {
+                // A number picks from the last listing; anything else is an id.
+                let picked = match rest.parse::<usize>() {
+                    Ok(n) => self
+                        .sessions
+                        .get(n.wrapping_sub(1))
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("no session {n} in the list; /resume shows it")),
+                    Err(_) => self.sessions_dir().and_then(|d| transcript::find(&d, &rest)),
+                };
+                match picked {
+                    Ok(saved) => self.resume(saved),
+                    Err(e) => self.push(view::error_line(&format!("  {e:#}"))),
+                }
+            }
             "/cost" => self.push(view::note_line(&format!(
                 "{} tasks · planner {} tokens ({} thinking) · worker {} tokens · scout {} tokens · context {} of {}",
                 self.tasks,
@@ -659,6 +713,28 @@ impl App {
             ))),
             _ => self.start(line, Mode::Auto, tx),
         }
+    }
+
+    fn sessions_dir(&self) -> Result<std::path::PathBuf> {
+        transcript::dir_for(&self.session.ctx.root)
+    }
+
+    /// Make an earlier session the current one and show what it holds.
+    fn resume(&mut self, saved: Saved) {
+        if self.running.is_some() {
+            self.push(view::note_line("a task is running; esc stops it"));
+            return;
+        }
+        if let Err(e) = self.session.resume(&saved) {
+            self.push(view::error_line(&format!("  could not resume: {e:#}")));
+            return;
+        }
+        self.planner_usage = saved.planner_usage;
+        self.worker_usage = saved.worker_usage;
+        self.scout_usage = saved.scout_usage;
+        self.context = saved.context;
+        self.tasks = saved.tasks.len();
+        self.push(view::replay_lines(&saved));
     }
 
     /// Hand a task to the session on its own tokio task; its events come back through `tx`.

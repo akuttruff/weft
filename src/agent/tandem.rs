@@ -61,6 +61,9 @@ pub struct Tandem<'a> {
     pub allowed: HashSet<String>,
     pub when: PlanWhen,
     pub review_rounds: u8,
+    /// Text put above this task when the conversation is not fresh: the
+    /// note a resumed session starts with. Empty most of the time.
+    pub lead: String,
 }
 
 impl Tandem<'_> {
@@ -113,7 +116,7 @@ impl Tandem<'_> {
         let lead = if fresh {
             project.clone()
         } else {
-            String::new()
+            self.lead.clone()
         };
         // With a note above it, the task gets a heading so it can be found again.
         let head = if lead.is_empty() { "" } else { "## Task\n" };
@@ -587,6 +590,7 @@ mod tests {
             allowed: HashSet::new(),
             when: PlanWhen::Auto,
             review_rounds: 2,
+            lead: String::new(),
         };
         let mut messages = vec![Message::System("sys".into())];
         let out = tandem
@@ -675,6 +679,7 @@ mod tests {
             allowed: HashSet::new(),
             when: PlanWhen::Always,
             review_rounds: 1,
+            lead: String::new(),
         };
         let mut messages = vec![];
         let out = tandem
@@ -709,6 +714,7 @@ mod tests {
             allowed: HashSet::new(),
             when: PlanWhen::Always,
             review_rounds: 1,
+            lead: String::new(),
         };
         let mut messages = vec![
             Message::System("sys".into()),

@@ -8,6 +8,7 @@ use unicode_width::UnicodeWidthChar;
 use super::diff::{Kind, Row};
 use crate::lm::Usage;
 use crate::mcp::Status;
+use crate::transcript::Saved;
 
 /// `> what the user typed`
 pub fn user_line(text: &str) -> Vec<Line<'static>> {
@@ -20,6 +21,89 @@ pub fn user_line(text: &str) -> Vec<Line<'static>> {
         ]));
     }
     lines
+}
+
+/// `/resume`: the folder's earlier sessions, numbered for picking.
+pub fn session_lines(sessions: &[Saved]) -> Vec<Line<'static>> {
+    if sessions.is_empty() {
+        return note_line("no other sessions in this folder");
+    }
+    let mut lines = Vec::new();
+    for (i, s) in sessions.iter().enumerate().take(10) {
+        let first = s
+            .tasks
+            .first()
+            .and_then(|t| t.lines().next())
+            .unwrap_or("(no task)");
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:>2}  ", i + 1), Style::new().fg(Color::Cyan)),
+            Span::styled(
+                format!(
+                    "{}  {} · {} task{}  ",
+                    s.id,
+                    when(&s.started),
+                    s.tasks.len(),
+                    if s.tasks.len() == 1 { "" } else { "s" }
+                ),
+                Style::new().dim(),
+            ),
+            Span::raw(clip(first, 60)),
+        ]));
+    }
+    if sessions.len() > 10 {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "      … and {} more; `weft sessions` lists them all",
+                sessions.len() - 10
+            ),
+            Style::new().dim(),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        "  /resume <number or id> picks one up",
+        Style::new().dim(),
+    )));
+    lines
+}
+
+/// The conversation a resumed session carries: each task and the first line
+/// of its answer, so you can see where you were.
+pub fn replay_lines(saved: &Saved) -> Vec<Line<'static>> {
+    let mut lines = note_line(&format!(
+        "resumed session {} · started {} · {} task{} · context {} tokens",
+        saved.id,
+        when(&saved.started),
+        saved.tasks.len(),
+        if saved.tasks.len() == 1 { "" } else { "s" },
+        k(saved.context),
+    ));
+    for (task, answer) in saved.exchanges() {
+        lines.extend(user_line(&task));
+        let mut rest = answer.lines().filter(|l| !l.trim().is_empty());
+        if let Some(first) = rest.next() {
+            lines.push(answer_line(&clip(first, 120), true));
+            if rest.next().is_some() {
+                lines.push(Line::from(Span::styled("  …", Style::new().dim())));
+            }
+        }
+    }
+    lines
+}
+
+/// `2026-10-25T14:19:01-07:00` → `2026-10-25 14:19`.
+pub fn when(at: &str) -> String {
+    match (at.get(..10), at.get(11..16)) {
+        (Some(day), Some(time)) => format!("{day} {time}"),
+        _ => at.to_string(),
+    }
+}
+
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", s.chars().take(max).collect::<String>())
+    }
 }
 
 /// `✻ planning`

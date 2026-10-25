@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::scout::Scout;
-use crate::agent::tandem::{Mode, Tandem, TandemOutcome};
+use crate::agent::tandem::{Mode, Tandem, TandemOutcome, snapshot};
 use crate::agent::worker::WorkerError;
 use crate::agent::{AgentEvent, Approver, Events, Model, prompts};
 use crate::config::{Config, PlanWhen};
@@ -19,7 +19,7 @@ use crate::lm::raw::RawModel;
 use crate::lm::{Endpoint, Message};
 use crate::mcp;
 use crate::tools::{Ctx, Registry};
-use crate::transcript::{self, Record, Transcript};
+use crate::transcript::{self, Record, Saved, Transcript};
 
 pub struct Session {
     pub planner: ChatModel,
@@ -46,6 +46,8 @@ pub struct Session {
     messages: Mutex<Vec<Message>>,
     /// The session file, once `start_transcript` has opened one.
     transcript: Mutex<Option<Arc<Transcript>>>,
+    /// A note for the worker above its next task, set by a resume.
+    lead: Mutex<Option<String>>,
 }
 
 impl Session {
@@ -98,7 +100,29 @@ impl Session {
             allowed: Mutex::new(HashSet::new()),
             messages: Mutex::new(vec![Message::System(prompts::WORKER.into())]),
             transcript: Mutex::new(None),
+            lead: Mutex::new(None),
         }
+    }
+
+    /// Pick up an earlier session: its conversation becomes the worker's, its
+    /// file is appended to from here on, and the worker is told the project
+    /// may have changed in the meantime.
+    pub fn resume(&self, saved: &Saved) -> anyhow::Result<()> {
+        let t = Transcript::open(&saved.path)?;
+        t.write(&Record::Resumed {
+            at: transcript::now(),
+        })?;
+        let mut messages = vec![Message::System(prompts::WORKER.into())];
+        messages.extend(saved.messages.iter().cloned());
+        *self.messages.lock().unwrap() = messages;
+        *self.transcript.lock().unwrap() = Some(Arc::new(t));
+        *self.lead.lock().unwrap() = Some(format!(
+            "## Resumed\nThis conversation was saved {} and picked up again {}. The project may have changed since: read a file again before editing it, and do not trust earlier tool output to still hold.\n\n{}",
+            day_of(&saved.last),
+            day_of(&transcript::now()),
+            snapshot(&self.ctx.root)
+        ));
+        Ok(())
     }
 
     /// Start writing this session down; returns its id.
@@ -173,6 +197,7 @@ impl Session {
     ) -> Result<TandemOutcome, WorkerError> {
         let mut messages = std::mem::take(&mut *self.messages.lock().unwrap());
         let allowed = std::mem::take(&mut *self.allowed.lock().unwrap());
+        let lead = self.lead.lock().unwrap().take();
         let before = messages.len();
         let began = Instant::now();
         self.record(Record::Task {
@@ -221,6 +246,7 @@ impl Session {
             allowed,
             when: self.when,
             review_rounds: self.review_rounds,
+            lead: lead.clone().unwrap_or_default(),
         };
         let result = tandem.run(task, mode, &mut messages).await;
         *self.allowed.lock().unwrap() = std::mem::take(&mut tandem.allowed);
@@ -234,7 +260,11 @@ impl Session {
                     self.record(Record::Message { message: m.clone() });
                 }
             }
-            Err(_) => messages.truncate(before),
+            Err(_) => {
+                // The note goes with the next task instead.
+                messages.truncate(before);
+                *self.lead.lock().unwrap() = lead;
+            }
         }
         self.record(Record::Done {
             at: transcript::now(),
@@ -253,8 +283,89 @@ impl Session {
         });
     }
 
+    /// The messages the worker would see next, for the screen to replay.
+    pub fn messages(&self) -> Vec<Message> {
+        self.messages.lock().unwrap().clone()
+    }
+
     /// How many messages the worker's conversation holds, system prompt aside.
     pub fn depth(&self) -> usize {
         self.messages.lock().unwrap().len().saturating_sub(1)
+    }
+}
+
+/// `2026-10-25T14:19:01-07:00` → `on 2026-10-25 at 14:19`.
+fn day_of(at: &str) -> String {
+    match (at.get(..10), at.get(11..16)) {
+        (Some(day), Some(time)) => format!("on {day} at {time}"),
+        _ => "earlier".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> Config {
+        toml::from_str(
+            r#"
+[lm_studio]
+[planner]
+model = "p"
+[worker]
+model = "w"
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn resume_restores_the_conversation_and_warns_the_worker_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Session::new(&config(), dir.path().to_path_buf());
+        let sessions = dir.path().join("sessions");
+        let t = Transcript::start(
+            &sessions,
+            Record::Meta {
+                id: String::new(),
+                root: dir.path().display().to_string(),
+                started: transcript::now(),
+                planner: "p".into(),
+                worker: "w".into(),
+                scout: "w".into(),
+            },
+        )
+        .unwrap();
+        t.write(&Record::Message {
+            message: Message::User("sort the tiles".into()),
+        })
+        .unwrap();
+        t.write(&Record::Message {
+            message: Message::Assistant {
+                content: "Sorted.".into(),
+                reasoning: None,
+                tool_calls: vec![],
+            },
+        })
+        .unwrap();
+        let saved = transcript::read(&t.path).unwrap();
+
+        assert_eq!(session.depth(), 0);
+        session.resume(&saved).unwrap();
+        assert_eq!(session.depth(), 2);
+        assert!(matches!(&session.messages()[0], Message::System(_)));
+        assert_eq!(session.transcript_id().as_deref(), Some(saved.id.as_str()));
+        let lead = session.lead.lock().unwrap().clone().unwrap();
+        assert!(
+            lead.starts_with("## Resumed\n") && lead.contains("## Project\n"),
+            "{lead}"
+        );
+        // The file got the marker, so a later read knows it was reopened.
+        let again = transcript::read(&t.path).unwrap();
+        assert_eq!(again.messages.len(), 2);
+        assert_eq!(
+            day_of("2026-10-25T14:19:01-07:00"),
+            "on 2026-10-25 at 14:19"
+        );
     }
 }

@@ -269,6 +269,17 @@ pub fn list(dir: &Path) -> Result<Vec<Saved>> {
     Ok(out)
 }
 
+/// How many sessions a folder has, without reading them.
+pub fn count(dir: &Path) -> usize {
+    fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 /// The session `which` names: an id, or `last` for the newest.
 pub fn find(dir: &Path, which: &str) -> Result<Saved> {
     if which == "last" {
