@@ -110,7 +110,7 @@ api_token = "..."            # or set LM_API_TOKEN
 [planner]
 model = "qwen/qwen3.8-27b"
 plan_effort = "medium"      # low | medium | xhigh
-review_effort = "medium"
+review_effort = "low"       # the review is one read of the diff; low is 3x faster than medium
 when = "auto"               # auto | always | never
 review_rounds = 1           # 0 turns review off
 

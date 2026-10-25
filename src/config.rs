@@ -72,7 +72,9 @@ pub struct Planner {
     pub model: String,
     #[serde(default = "Effort::medium")]
     pub plan_effort: Effort,
-    #[serde(default = "Effort::medium")]
+    /// Low by default: a review is one read of a diff, and at medium the 27B
+    /// spent over a minute approving a two-line change.
+    #[serde(default = "Effort::low")]
     pub review_effort: Effort,
     /// Plan before every task, never, or let a quick triage decide.
     #[serde(default)]
@@ -160,7 +162,7 @@ model = "qwen3.5-122b-a10b"
         let config: Config = toml::from_str(text).unwrap();
         assert_eq!(config.lm_studio.url, "http://127.0.0.1:1234");
         assert_eq!(config.planner.plan_effort, Effort::Medium);
-        assert_eq!(config.planner.review_effort, Effort::Medium);
+        assert_eq!(config.planner.review_effort, Effort::Low);
         assert_eq!(config.planner.when, PlanWhen::Auto);
         assert_eq!(config.planner.review_rounds, 1);
         assert!(!config.worker.thinking);

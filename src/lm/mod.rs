@@ -73,6 +73,9 @@ impl Effort {
         }
     }
     // Rust: serde's `default = "path"` wants a function, so these give it one.
+    pub fn low() -> Self {
+        Effort::Low
+    }
     pub fn medium() -> Self {
         Effort::Medium
     }

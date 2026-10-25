@@ -83,7 +83,7 @@ url = "http://127.0.0.1:1234"
 [planner]
 model = "qwen/qwen3.8-27b"    # plans and reviews, on the chat route
 plan_effort = "medium"        # low | medium | xhigh
-review_effort = "medium"
+review_effort = "low"         # one read of the diff; low is enough and three times faster
 when = "auto"                 # auto | always | never
 review_rounds = 1
 
