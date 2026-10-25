@@ -449,7 +449,73 @@ fn folder_note(root: &Path) -> String {
     if names.len() > 40 {
         out.push_str(&format!(" (+{} more)", names.len() - 40));
     }
-    out.push_str("\n\n");
+    out.push('\n');
+    out.push_str(&tree(root));
+    out.push('\n');
+    out
+}
+
+/// Files the tree lists before it is cut.
+const TREE_FILES: usize = 150;
+const TREE_PER_DIR: usize = 30;
+
+/// The folders under the top level and what is in them, three levels deep,
+/// one line each, so the models know the paths before they look. Hidden and
+/// `.gitignore`d files are left out, as are `node_modules` and `target`.
+fn tree(root: &Path) -> String {
+    use std::collections::BTreeMap;
+    let mut dirs: BTreeMap<std::path::PathBuf, Vec<String>> = BTreeMap::new();
+    let walk = ignore::WalkBuilder::new(root)
+        .max_depth(Some(3))
+        .hidden(true)
+        .require_git(false)
+        .filter_entry(|e| {
+            !matches!(
+                e.file_name().to_str(),
+                Some("node_modules" | "target" | ".git" | "dist" | "build")
+            )
+        })
+        .build();
+    let mut count = 0;
+    let mut cut = false;
+    for entry in walk.flatten() {
+        let Ok(rel) = entry.path().strip_prefix(root) else {
+            continue;
+        };
+        let Some(parent) = rel.parent().filter(|p| !p.as_os_str().is_empty()) else {
+            continue; // the top level is listed above
+        };
+        if count >= TREE_FILES {
+            cut = true;
+            break;
+        }
+        count += 1;
+        let is_dir = entry.file_type().is_some_and(|t| t.is_dir());
+        let name = rel
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        dirs.entry(parent.to_path_buf())
+            .or_default()
+            .push(if is_dir { format!("{name}/") } else { name });
+    }
+    let mut out = String::new();
+    for (dir, mut names) in dirs {
+        names.sort();
+        let shown: Vec<&str> = names
+            .iter()
+            .take(TREE_PER_DIR)
+            .map(String::as_str)
+            .collect();
+        out.push_str(&format!("{}/: {}", dir.display(), shown.join(" ")));
+        if names.len() > TREE_PER_DIR {
+            out.push_str(&format!(" (+{} more)", names.len() - TREE_PER_DIR));
+        }
+        out.push('\n');
+    }
+    if cut {
+        out.push_str("(the tree is cut here; list_files shows the rest)\n");
+    }
     out
 }
 
@@ -853,9 +919,18 @@ mod tests {
         assert!(s.contains("The folder is empty"), "{s}");
         std::fs::write(dir.path().join("package.json"), "{}").unwrap();
         std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::create_dir_all(dir.path().join("src/components")).unwrap();
+        std::fs::write(dir.path().join("src/App.tsx"), "").unwrap();
+        std::fs::write(dir.path().join("src/components/Monitors.test.tsx"), "").unwrap();
+        std::fs::create_dir_all(dir.path().join("node_modules/x")).unwrap();
         let s = snapshot(dir.path());
         assert!(
             s.contains("Stack: Node") && s.contains("Top level: package.json src/"),
+            "{s}"
+        );
+        assert!(
+            s.contains("src/: App.tsx components/\nsrc/components/: Monitors.test.tsx\n")
+                && !s.contains("node_modules/:"),
             "{s}"
         );
     }
