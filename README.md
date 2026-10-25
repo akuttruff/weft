@@ -20,13 +20,17 @@ run end to end in the interface below. MCP servers are next.
 
 `weft` draws an input box at the bottom of your terminal and writes the
 transcript above it, into the terminal's own history, so it is still there when
-you leave. Here is a feature added to a small notes CLI, start to finish:
+you leave. Here it is in a React + Node project (a monitoring board), given two
+things in a row the way you would type them: "sort the monitor tiles so
+anything that's alerting or warning comes first in its group", then "now add a
+test for that":
 
-![weft adding a command to a CLI](docs/weft.png)
+![a weft session: a change, then a test for it](docs/weft.png)
 
 Each `⏺` line is a tool call with the first line of its result under it. The
-plan sits in a cyan gutter. Edits, new files and shell commands ask first, and
-one key answers:
+plan sits in a cyan gutter. The second task is understood against the first,
+because the planner is told what the session did before. Edits, new files and
+shell commands ask first, and one key answers:
 
 ![weft asking before an edit](docs/approval.png)
 

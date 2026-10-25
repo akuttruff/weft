@@ -774,10 +774,20 @@ impl App {
 
     fn footer_line(&self) -> Line<'static> {
         let pct = (self.context as f32 / CONTEXT_WINDOW as f32 * 100.0).round() as u32;
+        // Name the model that has the floor: the planner while it plans or
+        // reviews, the worker otherwise.
+        let (model, doing) = match &self.running {
+            Some(Running {
+                turn: Some((Role::Planner, _)),
+                phase,
+                ..
+            }) => (self.session.planner_name(), *phase),
+            Some(r) => (self.session.worker_name(), r.phase),
+            None => (self.session.worker_name(), "idle"),
+        };
         Line::from(Span::styled(
             format!(
-                "  {} · think {} · context {pct}% · {} in conversation · / for commands",
-                self.session.worker_name(),
+                "  {model} · {doing} · think {} · context {pct}% · {} in conversation · / for commands",
                 if self.think { "on" } else { "off" },
                 self.session.depth()
             ),
