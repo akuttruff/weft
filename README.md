@@ -46,7 +46,8 @@ menu: `/plan <task>` plans first and waits for your word on the plan, `/go
 toggles the worker's thinking, `/clear` starts a fresh conversation,
 `/resume` lists this folder's earlier sessions and `/resume 2` picks one up,
 `/compact` folds the earlier tasks into a note now, `/undo` puts back the last
-task's files, `/cost` shows the tokens
+task's files, `/accept` lets edits and new files through without asking for
+the rest of the session (shell commands still ask), `/cost` shows the tokens
 used, `/mcp` lists the MCP servers and their tools, `/help`, `/quit`.
 
 ## How a task flows

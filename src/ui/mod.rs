@@ -52,6 +52,11 @@ const COMMANDS: &[(&str, &str, bool)] = &[
     ("/plan", "plan first, then work", true),
     ("/go", "straight to work, no plan", true),
     ("/think", "toggle the worker's thinking", false),
+    (
+        "/accept",
+        "toggle: edits and new files without asking",
+        false,
+    ),
     ("/clear", "start a fresh conversation", false),
     ("/compact", "fold earlier tasks into a note", false),
     ("/undo", "put back the files the last task changed", false),
@@ -134,6 +139,8 @@ struct App {
     session: Arc<Session>,
     yes: bool,
     think: bool,
+    /// Edits and new files run without asking; shell commands still ask.
+    accept_edits: bool,
     input: Input,
     history: Vec<String>,
     history_at: Option<usize>,
@@ -195,6 +202,7 @@ async fn event_loop(
         session,
         yes,
         think,
+        accept_edits: false,
         input: Input::default(),
         history: Vec::new(),
         history_at: None,
@@ -771,6 +779,16 @@ impl App {
                     if self.think { "on" } else { "off" }
                 )));
             }
+            "/accept" => {
+                self.accept_edits = !self.accept_edits;
+                self.session
+                    .allow(&["edit_file", "write_file"], self.accept_edits);
+                self.push(view::note_line(if self.accept_edits {
+                    "edits and new files no longer ask; shell commands still do · /accept to ask again"
+                } else {
+                    "edits and new files ask again"
+                }));
+            }
             "/clear" => {
                 self.session.clear();
                 self.push(view::note_line("fresh conversation"));
@@ -1160,8 +1178,13 @@ impl App {
         };
         Line::from(Span::styled(
             format!(
-                "  {model} · {doing} · think {} · context {pct}% · {} in conversation · / for commands",
+                "  {model} · {doing} · think {}{} · context {pct}% · {} in conversation · / for commands",
                 if self.think { "on" } else { "off" },
+                if self.accept_edits {
+                    " · edits auto"
+                } else {
+                    ""
+                },
                 self.session.depth()
             ),
             Style::new().dim(),

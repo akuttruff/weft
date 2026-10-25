@@ -457,6 +457,18 @@ impl Session {
         Ok(done)
     }
 
+    /// Let these tools run without asking for the rest of the session, or ask again.
+    pub fn allow(&self, tools: &[&str], yes: bool) {
+        let mut allowed = self.allowed.lock().unwrap();
+        for t in tools {
+            if yes {
+                allowed.insert((*t).to_string());
+            } else {
+                allowed.remove(*t);
+            }
+        }
+    }
+
     /// Forget the conversation, keep the approvals.
     pub fn clear(&self) {
         self.messages.lock().unwrap().truncate(1);
