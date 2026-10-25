@@ -23,6 +23,7 @@ use weft::lm::{Endpoint, Message, Request, StreamEvent, ToolCall, ToolSpec};
 use weft::mcp::McpConfig;
 use weft::session::Session;
 use weft::tools::{Ctx, Registry};
+use weft::transcript;
 use weft::ui::diff;
 
 #[derive(Parser)]
@@ -61,6 +62,8 @@ enum Command {
     },
     /// Start the MCP servers in ~/.config/weft/mcp.json and list their tools.
     Mcp,
+    /// List this folder's earlier sessions.
+    Sessions,
 }
 
 #[tokio::main]
@@ -77,11 +80,13 @@ async fn main() -> Result<()> {
         None => {
             let mut session = Session::new(&config, std::env::current_dir()?);
             session.attach_mcp(connect_mcp().await?);
+            start_transcript(&session);
             weft::ui::run(Arc::new(session), args.yes, think).await
         }
         Some(Command::Run { task }) => {
             let mut session = Session::new(&config, std::env::current_dir()?);
             session.attach_mcp(connect_mcp().await?);
+            start_transcript(&session);
             for status in &session.mcp {
                 if let Err(e) = &status.tools {
                     eprintln!("\x1b[31mmcp {}: {e}\x1b[0m", status.name);
@@ -91,6 +96,25 @@ async fn main() -> Result<()> {
         }
         Some(Command::Probe { question }) => probe(&config, question, args.think).await,
         Some(Command::Tool { name, args }) => tool(&config, name, args).await,
+        Some(Command::Sessions) => {
+            let dir = transcript::dir_for(&std::env::current_dir()?)?;
+            let all = transcript::list(&dir)?;
+            if all.is_empty() {
+                println!("no sessions yet for this folder");
+            }
+            for s in all {
+                let first = s.tasks.first().map(String::as_str).unwrap_or("(no task)");
+                println!(
+                    "\x1b[1m{}\x1b[0m  \x1b[2m{} · {} task{}\x1b[0m  {}",
+                    s.id,
+                    &s.started[..16.min(s.started.len())],
+                    s.tasks.len(),
+                    if s.tasks.len() == 1 { "" } else { "s" },
+                    first.lines().next().unwrap_or("")
+                );
+            }
+            Ok(())
+        }
         Some(Command::Mcp) => {
             for (status, server) in connect_mcp().await? {
                 match (&status.tools, server) {
@@ -122,6 +146,13 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+/// Keep a transcript of this session; without one the session still runs.
+fn start_transcript(session: &Session) {
+    if let Err(e) = session.start_transcript() {
+        eprintln!("\x1b[33mnot keeping a transcript: {e:#}\x1b[0m");
     }
 }
 

@@ -20,8 +20,10 @@ use tokio::sync::mpsc;
 
 /// One message in a conversation, in the shape the chat route expects.
 // Rust: an enum where each variant carries its own fields. A `Message` is exactly
-// one of these; `match` makes you handle every one.
-#[derive(Debug, Clone, PartialEq)]
+// one of these; `match` makes you handle every one. The serde attributes are
+// for the transcript file: `{"role":"user","body":"…"}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "role", content = "body", rename_all = "lowercase")]
 pub enum Message {
     System(String),
     User(String),

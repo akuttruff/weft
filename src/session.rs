@@ -3,20 +3,23 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::scout::Scout;
 use crate::agent::tandem::{Mode, Tandem, TandemOutcome};
 use crate::agent::worker::WorkerError;
-use crate::agent::{Approver, Events, Model, prompts};
+use crate::agent::{AgentEvent, Approver, Events, Model, prompts};
 use crate::config::{Config, PlanWhen};
 use crate::lm::chat::ChatModel;
 use crate::lm::raw::RawModel;
 use crate::lm::{Endpoint, Message};
 use crate::mcp;
 use crate::tools::{Ctx, Registry};
+use crate::transcript::{self, Record, Transcript};
 
 pub struct Session {
     pub planner: ChatModel,
@@ -41,6 +44,8 @@ pub struct Session {
     // never across an `.await`.
     allowed: Mutex<HashSet<String>>,
     messages: Mutex<Vec<Message>>,
+    /// The session file, once `start_transcript` has opened one.
+    transcript: Mutex<Option<Arc<Transcript>>>,
 }
 
 impl Session {
@@ -92,6 +97,42 @@ impl Session {
             servers: Vec::new(),
             allowed: Mutex::new(HashSet::new()),
             messages: Mutex::new(vec![Message::System(prompts::WORKER.into())]),
+            transcript: Mutex::new(None),
+        }
+    }
+
+    /// Start writing this session down; returns its id.
+    pub fn start_transcript(&self) -> anyhow::Result<String> {
+        let dir = transcript::dir_for(&self.ctx.root)?;
+        let t = Transcript::start(
+            &dir,
+            Record::Meta {
+                id: String::new(),
+                root: self.ctx.root.display().to_string(),
+                started: transcript::now(),
+                planner: self.planner_name().to_string(),
+                worker: self.worker_name().to_string(),
+                scout: self.scout_model.clone(),
+            },
+        )?;
+        let id = t.id.clone();
+        *self.transcript.lock().unwrap() = Some(Arc::new(t));
+        Ok(id)
+    }
+
+    pub fn transcript_id(&self) -> Option<String> {
+        self.transcript
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|t| t.id.clone())
+    }
+
+    /// One line to the transcript. A write that fails once the file is open
+    /// (a full disk) loses that line and nothing else; the session goes on.
+    fn record(&self, record: Record) {
+        if let Some(t) = &*self.transcript.lock().unwrap() {
+            let _ = t.write(&record);
         }
     }
 
@@ -133,14 +174,39 @@ impl Session {
         let mut messages = std::mem::take(&mut *self.messages.lock().unwrap());
         let allowed = std::mem::take(&mut *self.allowed.lock().unwrap());
         let before = messages.len();
+        let began = Instant::now();
+        self.record(Record::Task {
+            at: transcript::now(),
+            text: task.to_string(),
+        });
 
         let worker: &dyn Model = if think {
             &self.worker_thinking
         } else {
             &self.worker
         };
+        // The events pass through here on their way to the screen, so the
+        // transcript sees each one too (the streamed text aside: the whole
+        // answer lands in the conversation anyway).
+        let (inner, mut inner_rx) = mpsc::channel::<AgentEvent>(256);
+        let transcript = self.transcript.lock().unwrap().clone();
+        let forward = tokio::spawn(async move {
+            while let Some(evt) = inner_rx.recv().await {
+                if let Some(t) = &transcript
+                    && !matches!(evt, AgentEvent::Text { .. } | AgentEvent::Reasoning { .. })
+                {
+                    let _ = t.write(&Record::Event {
+                        at: transcript::now(),
+                        event: evt.clone(),
+                    });
+                }
+                if events.send(evt).await.is_err() {
+                    break;
+                }
+            }
+        });
         // The tools learn this task's stop signal and event stream.
-        let ctx = self.ctx.for_task(Some(events.clone()), cancel.clone());
+        let ctx = self.ctx.for_task(Some(inner.clone()), cancel.clone());
         let mut tandem = Tandem {
             planner: &self.planner,
             reviewer: &self.reviewer,
@@ -150,7 +216,7 @@ impl Session {
             planner_registry: &self.planner_registry,
             ctx: &ctx,
             approver,
-            events,
+            events: inner,
             cancel,
             allowed,
             when: self.when,
@@ -159,10 +225,22 @@ impl Session {
         let result = tandem.run(task, mode, &mut messages).await;
         *self.allowed.lock().unwrap() = std::mem::take(&mut tandem.allowed);
         drop(tandem);
+        drop(ctx);
+        let _ = forward.await;
 
-        if result.is_err() {
-            messages.truncate(before);
+        match &result {
+            Ok(_) => {
+                for m in &messages[before..] {
+                    self.record(Record::Message { message: m.clone() });
+                }
+            }
+            Err(_) => messages.truncate(before),
         }
+        self.record(Record::Done {
+            at: transcript::now(),
+            seconds: began.elapsed().as_secs_f32(),
+            error: result.as_ref().err().map(|e| e.to_string()),
+        });
         *self.messages.lock().unwrap() = messages;
         result
     }
@@ -170,6 +248,9 @@ impl Session {
     /// Forget the conversation, keep the approvals.
     pub fn clear(&self) {
         self.messages.lock().unwrap().truncate(1);
+        self.record(Record::Clear {
+            at: transcript::now(),
+        });
     }
 
     /// How many messages the worker's conversation holds, system prompt aside.

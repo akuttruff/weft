@@ -7,6 +7,7 @@ pub mod tandem;
 pub mod worker;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::lm::chat::ChatModel;
@@ -14,7 +15,8 @@ use crate::lm::raw::RawModel;
 use crate::lm::{LmError, Reply, Request, Sender, Usage};
 
 /// Which model is speaking.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Role {
     Planner,
     Worker,
@@ -51,8 +53,10 @@ impl Model for RawModel {
     }
 }
 
-/// What the screen hears while the agent works.
-#[derive(Debug, Clone, PartialEq)]
+/// What the screen hears while the agent works. Also what the transcript
+/// records, as `{"type":"tool_start",…}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
     /// A model has started a turn.
     TurnStart {

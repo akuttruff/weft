@@ -115,9 +115,11 @@ impl Tandem<'_> {
         } else {
             String::new()
         };
+        // With a note above it, the task gets a heading so it can be found again.
+        let head = if lead.is_empty() { "" } else { "## Task\n" };
         let ask = match &plan {
-            Some(p) => format!("{lead}{task}\n\n{}\n\n{p}", prompts::WORKER_WITH_PLAN),
-            None => format!("{lead}{task}"),
+            Some(p) => format!("{lead}{head}{task}\n\n{}\n\n{p}", prompts::WORKER_WITH_PLAN),
+            None => format!("{lead}{head}{task}"),
         };
         messages.push(Message::User(ask));
         let done = self.work(self.worker, messages).await?;
@@ -287,17 +289,16 @@ pub fn verdict(text: &str) -> (bool, String) {
     (approved, rest)
 }
 
-/// The last few tasks and answers of this session, for the models that do not
-/// share the worker's conversation. `None` on a fresh session.
-pub fn earlier(messages: &[Message]) -> Option<String> {
+/// The tasks of a conversation and the answers they got, in order.
+pub fn exchanges(messages: &[Message]) -> Vec<(String, String)> {
     let mut pairs: Vec<(String, String)> = Vec::new();
     let mut task: Option<String> = None;
     for m in messages {
         match m {
-            // A fix request is part of the previous task, not a new one.
-            Message::User(s) if !s.starts_with(prompts::WORKER_FIX) => {
-                // The plan was appended after a blank line; the task is what came before it.
-                task = Some(s.split("\n\n").next().unwrap_or(s).trim().to_string());
+            Message::User(s) => {
+                if let Some(t) = task_of(s) {
+                    task = Some(t);
+                }
             }
             Message::Assistant {
                 content,
@@ -311,6 +312,29 @@ pub fn earlier(messages: &[Message]) -> Option<String> {
             _ => {}
         }
     }
+    pairs
+}
+
+/// The task in one of the worker's user messages, or `None` for a message
+/// that is not a task: a fix request (part of the task before it) or a note
+/// such as the project snapshot or a summary, which open with `## `.
+fn task_of(s: &str) -> Option<String> {
+    if s.starts_with(prompts::WORKER_FIX) {
+        return None;
+    }
+    let body = match s.split_once("## Task\n") {
+        Some((_, after)) => after,
+        None if s.starts_with("## ") => return None,
+        None => s,
+    };
+    // The plan was appended after a blank line; the task is what came before it.
+    Some(body.split("\n\n").next().unwrap_or(body).trim().to_string())
+}
+
+/// The last few tasks and answers of this session, for the models that do not
+/// share the worker's conversation. `None` on a fresh session.
+pub fn earlier(messages: &[Message]) -> Option<String> {
+    let pairs = exchanges(messages);
     if pairs.is_empty() {
         return None;
     }
@@ -717,6 +741,33 @@ mod tests {
             seen[0]
         );
         assert_eq!(earlier(&[]), None);
+    }
+
+    #[test]
+    fn exchanges_find_tasks_under_notes_and_skip_fix_requests() {
+        let answer = |s: &str| Message::Assistant {
+            content: s.into(),
+            reasoning: None,
+            tool_calls: vec![],
+        };
+        let messages = vec![
+            Message::System("sys".into()),
+            Message::User("## Project\nFolder: /p\n\n## Task\nsort the tiles\n\nplan…".into()),
+            answer("Sorted."),
+            Message::User(format!("{}\n\n- rename x", prompts::WORKER_FIX)),
+            answer("Renamed."),
+            Message::User("## Resumed\nThe project may have changed.".into()),
+            answer("Noted."),
+            Message::User("now add a test".into()),
+            answer("Added one."),
+        ];
+        assert_eq!(
+            exchanges(&messages),
+            [
+                ("sort the tiles".to_string(), "Sorted.".to_string()),
+                ("now add a test".to_string(), "Added one.".to_string()),
+            ]
+        );
     }
 
     #[test]

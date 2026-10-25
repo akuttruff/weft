@@ -178,11 +178,15 @@ async fn event_loop(
     let mut keys = EventStream::new();
     let mut tick = tokio::time::interval(TICK);
 
+    let session_note = match app.session.transcript_id() {
+        Some(id) => format!(" · session {id}"),
+        None => String::new(),
+    };
     app.push(vec![Line::from(vec![
         Span::styled("weft", Style::new().bold()),
         Span::styled(
             format!(
-                " · {} plans and reviews · {} works",
+                " · {} plans and reviews · {} works{session_note}",
                 app.session.planner_name(),
                 app.session.worker_name()
             ),

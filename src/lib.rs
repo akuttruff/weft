@@ -10,4 +10,5 @@ pub mod lm;
 pub mod mcp;
 pub mod session;
 pub mod tools;
+pub mod transcript;
 pub mod ui;
