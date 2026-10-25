@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::compact::{self, Compacted};
+use crate::agent::delegate::Delegate;
 use crate::agent::scout::Scout;
 use crate::agent::tandem::{Mode, Tandem, TandemOutcome, snapshot};
 use crate::agent::worker::WorkerError;
@@ -22,7 +23,7 @@ use crate::lm::chat::ChatModel;
 use crate::lm::raw::RawModel;
 use crate::lm::{Endpoint, Message};
 use crate::mcp;
-use crate::tools::{Ctx, Registry};
+use crate::tools::{Ctx, Registry, Rules};
 use crate::transcript::{self, Record, Saved, Transcript};
 
 pub struct Session {
@@ -41,6 +42,10 @@ pub struct Session {
     pub compact_at: u32,
     /// The config's hooks; the registry runs the edit and shell ones, the session the task ones.
     hooks: Hooks,
+    rules: Rules,
+    /// How to build the scout's model again, for the helpers' own tool set.
+    scout_endpoint: Endpoint,
+    scout_effort: Option<crate::lm::Effort>,
     /// The worker's context window, in tokens.
     pub window: u32,
     pub ctx: Ctx,
@@ -117,6 +122,9 @@ impl Session {
             digest: helper(),
             compact_at: config.compact.at,
             hooks: Hooks(config.hooks.clone()),
+            rules: config.approve.clone(),
+            scout_endpoint: endpoint(&scout_model),
+            scout_effort: config.scout.effort,
             window: config.compact.window,
             scout_model,
             ctx: Ctx::new(root),
@@ -244,13 +252,45 @@ impl Session {
     /// Offer the tools of the servers that came up to the worker, and remember
     /// how every server fared for `/mcp`.
     pub fn attach_mcp(&mut self, connected: Vec<(mcp::Status, Option<mcp::Server>)>) {
+        // The helpers' tool set: everything the worker has except `delegate`.
+        let mut helpers = Registry::builtin()
+            .with_rules(self.rules.clone())
+            .with_hooks(self.hooks.0.clone());
+        helpers.extend(vec![self.scout()]);
         for (status, server) in connected {
             self.mcp.push(status);
             if let Some(server) = server {
                 self.registry.extend(server.tools());
+                helpers.extend(server.tools());
                 self.servers.push(server);
             }
         }
+        let worker = RawModel::new(
+            Endpoint {
+                url: self.worker.endpoint.url.clone(),
+                api_token: self.worker.endpoint.api_token.clone(),
+                model: self.worker.endpoint.model.clone(),
+            },
+            false,
+        );
+        self.registry.extend(vec![Box::new(Delegate::new(
+            Box::new(worker),
+            Arc::new(helpers),
+        ))]);
+    }
+
+    /// A scout on the configured model.
+    fn scout(&self) -> Box<dyn crate::tools::Tool> {
+        let endpoint = Endpoint {
+            url: self.scout_endpoint.url.clone(),
+            api_token: self.scout_endpoint.api_token.clone(),
+            model: self.scout_endpoint.model.clone(),
+        };
+        let model: Box<dyn Model> = match self.scout_effort {
+            Some(effort) => Box::new(ChatModel::new(endpoint, Some(effort))),
+            None => Box::new(RawModel::new(endpoint, false)),
+        };
+        Box::new(Scout::new(model))
     }
 
     pub fn planner_name(&self) -> &str {
@@ -272,7 +312,7 @@ impl Session {
         task: &str,
         mode: Mode,
         think: bool,
-        approver: &dyn Approver,
+        approver: Arc<dyn Approver>,
         events: Events,
         cancel: CancellationToken,
     ) -> Result<TandemOutcome, WorkerError> {
@@ -328,9 +368,12 @@ impl Session {
         });
         // The tools learn this task's stop signal, event stream and checkpoint.
         let checkpoint = self.checkpoint_dir().map(|d| Arc::new(Checkpoint::new(d)));
-        let ctx = self
-            .ctx
-            .for_task(Some(inner.clone()), cancel.clone(), checkpoint.clone());
+        let ctx = self.ctx.for_task(
+            Some(inner.clone()),
+            cancel.clone(),
+            checkpoint.clone(),
+            Some(approver.clone()),
+        );
         let mut tandem = Tandem {
             planner: &self.planner,
             reviewer: &self.reviewer,
@@ -339,7 +382,7 @@ impl Session {
             registry: &self.registry,
             planner_registry: &self.planner_registry,
             ctx: &ctx,
-            approver,
+            approver: approver.as_ref(),
             events: inner.clone(),
             cancel: cancel.clone(),
             allowed,
@@ -430,7 +473,7 @@ impl Session {
         let mut messages = std::mem::take(&mut *self.messages.lock().unwrap());
         let ctx = self
             .ctx
-            .for_task(Some(events.clone()), cancel.clone(), None);
+            .for_task(Some(events.clone()), cancel.clone(), None, None);
         let result = self.fold(&ctx, events, cancel, &mut messages, before).await;
         *self.messages.lock().unwrap() = messages;
         result

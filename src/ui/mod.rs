@@ -1001,13 +1001,13 @@ impl App {
                     }
                 })
             };
-            let approver: Box<dyn Approver> = if yes {
-                Box::new(Yes)
+            let approver: Arc<dyn Approver> = if yes {
+                Arc::new(Yes)
             } else {
-                Box::new(UiApprover { tx: tx.clone() })
+                Arc::new(UiApprover { tx: tx.clone() })
             };
             let result = session
-                .run_task(&task, mode, think, approver.as_ref(), events, cancel)
+                .run_task(&task, mode, think, approver, events, cancel)
                 .await;
             let _ = forward.await;
             let _ = tx.send(UiMsg::Done(result)).await;

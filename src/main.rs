@@ -340,14 +340,14 @@ async fn run_once(session: &Session, task: String, yes: bool, think: bool) -> Re
             cancel.cancel();
         })
     };
-    let approver: Box<dyn Approver> = if yes {
-        Box::new(Yes)
+    let approver: Arc<dyn Approver> = if yes {
+        Arc::new(Yes)
     } else {
-        Box::new(Terminal)
+        Arc::new(Terminal)
     };
     let began = Instant::now();
     let result = session
-        .run_task(&task, Mode::Auto, think, approver.as_ref(), events, cancel)
+        .run_task(&task, Mode::Auto, think, approver, events, cancel)
         .await;
     on_ctrl_c.abort();
     let _ = printer.await;

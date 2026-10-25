@@ -89,6 +89,13 @@ it read stay in its context and are thrown away, so the worker's window holds
 only the answer. The models call it themselves; you never ask for it. It shows
 as one `⏺ Scout …` line.
 
+**The delegate.** The worker can hand one self-contained part of a task to a
+helper: a fresh worker on the same model with the same tools and its own
+context. Its edits and shell commands show on the screen and ask for approval
+like any other; only its report comes back to the worker that asked, so the
+files it read stay out of that context. The reviewer sees the helper's
+changes too. A helper cannot delegate in turn.
+
 A small model makes a good scout: a 9B answers in 5–15 seconds where the 122B
 takes 20–30. Small models also sometimes cite a file they never opened, so Weft
 checks the paths in every answer against the folder and sends the scout back
@@ -286,6 +293,7 @@ against the project root and refused outside it, symlinks included. `pkill`,
 | `write_file` | New files only |
 | `bash` | Runs in the project root, timeout, last 200 lines of output |
 | `scout` | One where-or-how question, answered by a read-only run of another model |
+| `delegate` | One self-contained piece of the task, done by a fresh worker that reports back |
 | `server__tool` | Any tool of a configured MCP server; asks first |
 
 ## Reading the code to learn Rust

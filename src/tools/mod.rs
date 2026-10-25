@@ -17,13 +17,13 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::Events;
+use crate::agent::{Approver, Events};
 use crate::checkpoint::Checkpoint;
 use crate::hooks::{self, Hooks, On};
 use crate::lm::{ToolCall, ToolSpec};
 
 /// What the tools know about where they are, and about the task they run in.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Ctx {
     /// The project root; nothing outside it may be read or written.
     pub root: PathBuf,
@@ -33,6 +33,14 @@ pub struct Ctx {
     pub events: Option<Events>,
     /// Where files are kept as they were before this task changes them, for `/undo`.
     pub checkpoint: Option<Arc<Checkpoint>>,
+    /// Who answers approval questions, for a tool that runs a worker of its own (the delegate).
+    pub approver: Option<Arc<dyn Approver>>,
+}
+
+impl std::fmt::Debug for Ctx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ctx").field("root", &self.root).finish()
+    }
 }
 
 impl Ctx {
@@ -42,21 +50,25 @@ impl Ctx {
             cancel: CancellationToken::new(),
             events: None,
             checkpoint: None,
+            approver: None,
         }
     }
 
-    /// The same folder, tied to one task's stop signal, event stream and checkpoint.
+    /// The same folder, tied to one task's stop signal, event stream,
+    /// checkpoint and approver.
     pub fn for_task(
         &self,
         events: Option<Events>,
         cancel: CancellationToken,
         checkpoint: Option<Arc<Checkpoint>>,
+        approver: Option<Arc<dyn Approver>>,
     ) -> Self {
         Self {
             root: self.root.clone(),
             cancel,
             events,
             checkpoint,
+            approver,
         }
     }
 }

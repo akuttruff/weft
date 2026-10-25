@@ -172,6 +172,14 @@ impl Tandem<'_> {
         out.take(&done);
 
         // 3. Review what was changed, and send the worker back if asked.
+        // Helpers' edits count too; the checkpoint saw every file the tools changed.
+        if let Some(cp) = &self.ctx.checkpoint {
+            for f in cp.files() {
+                if !out.touched.contains(&f) {
+                    out.touched.push(f);
+                }
+            }
+        }
         let mut round = 0;
         while !out.touched.is_empty() && round < self.review_rounds {
             round += 1;

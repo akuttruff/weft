@@ -2,6 +2,7 @@
 //! whatever is drawing the screen.
 
 pub mod compact;
+pub mod delegate;
 pub mod prompts;
 pub mod scout;
 pub mod tandem;
@@ -191,6 +192,10 @@ pub fn call_summary(name: &str, args: &serde_json::Value) -> String {
             out
         }
         "scout" => format!("Scout {}", s("question")),
+        "delegate" => {
+            let task: String = s("task").chars().take(80).collect();
+            format!("Delegate {task}")
+        }
         "edit_file" => format!("Edit {}", s("path")),
         "write_file" => format!("Write {}", s("path")),
         "bash" => format!("Bash {}", s("command").lines().next().unwrap_or("")),
