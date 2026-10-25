@@ -120,9 +120,15 @@ struct App {
 }
 
 pub async fn run(session: Arc<Session>, yes: bool, think: bool) -> Result<()> {
-    let mut terminal = ratatui::init_with_options(TerminalOptions {
+    // Rust: `try_init_with_options` returns a Result where `init_with_options`
+    // would panic; a pipe or a terminal that does not answer gets a sentence
+    // instead of a backtrace.
+    let mut terminal = ratatui::try_init_with_options(TerminalOptions {
         viewport: Viewport::Inline(LIVE_ROWS),
-    });
+    })
+    .map_err(|e| {
+        anyhow::anyhow!("weft needs a terminal to draw in ({e}); try `weft run \"task\"` instead")
+    })?;
     let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
     let result = event_loop(&mut terminal, session, yes, think).await;
     let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
