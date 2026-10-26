@@ -11,16 +11,19 @@ A coding agent for the terminal that runs local models in tandem through
 Built on a Mac Studio with `qwen/qwen3.8-27b` as the planner and
 `qwen3.5-122b-a10b` as the worker, but any two models LM Studio serves will do.
 
-## Status
+## Why I built it
 
-Ready for real work. Type `weft` in a repository and give it a task; plan,
-work and review run end to end in the interface below. A plan can wait for your word, a task's
-edits can be undone, and the worker can hand a piece of the work to a helper,
-ask a scout where things live, look at a screenshot, and keep what it learned
-for next time. Your notes in `WEFT.md`, your commands in `.weft/commands/`,
-your hooks and approval rules in the config, and MCP servers all plug in.
-Every session is written down, can be resumed, and folds its history into a
-note before the context window fills.
+Weft is how I am learning Rust. It is my third project in the language, after
+two smaller ones, and the first with enough moving parts to need the things
+Rust is known for: ownership across async tasks, traits behind `dyn`, channels
+between a model loop and a screen, lifetimes on borrowed workers. I built it
+in pair with Claude Code, one step at a time. Each step landed as a commit I
+read before the next began, and the code carries `// Rust:` comments where a
+language feature first appears, written for the reader I was that day. The
+section at the end lists the files in the order that teaches the most.
+
+It also replaced the model router I had meant to write. The planner, worker
+and scout are that router, grown into a tool I use.
 
 ## In the terminal
 
