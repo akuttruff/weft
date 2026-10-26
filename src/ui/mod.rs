@@ -71,6 +71,11 @@ const COMMANDS: &[(&str, &str, bool)] = &[
     ("/cost", "tokens used this session", false),
     ("/mcp", "MCP servers and their tools", false),
     ("/help", "keys and commands", false),
+    (
+        "/restart",
+        "leave and come straight back to this session",
+        false,
+    ),
     ("/quit", "leave", false),
 ];
 
@@ -201,6 +206,8 @@ struct App {
     plan_ask: Option<oneshot::Sender<PlanDecision>>,
     quit_armed: bool,
     quit: bool,
+    /// Leaving in order to come straight back (`/restart`).
+    restart: bool,
     frame: usize,
     /// Lines waiting to be pushed above the live area, each with the prefix
     /// its continuation lines take when wrapped.
@@ -222,12 +229,20 @@ struct App {
     sessions: Vec<Saved>,
 }
 
+/// How the screen was left: for good, or to be started again on the same
+/// session (`/restart`, which picks up a newly installed build).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exit {
+    Quit,
+    Restart,
+}
+
 pub async fn run(
     session: Arc<Session>,
     yes: bool,
     think: bool,
     resume: Option<Saved>,
-) -> Result<()> {
+) -> Result<Exit> {
     // Rust: `try_init_with_options` returns a Result where `init_with_options`
     // would panic; a pipe or a terminal that does not answer gets a sentence
     // instead of a backtrace.
@@ -250,7 +265,7 @@ async fn event_loop(
     yes: bool,
     think: bool,
     resume: Option<Saved>,
-) -> Result<()> {
+) -> Result<Exit> {
     let mut app = App::new(session, yes, think);
     let (tx, mut rx) = mpsc::channel::<UiMsg>(512);
     let mut keys = EventStream::new();
@@ -313,7 +328,11 @@ async fn event_loop(
     }
     app.flush(terminal)?;
     terminal.draw(|frame| frame.render_widget(Paragraph::new(""), frame.area()))?;
-    Ok(())
+    Ok(if app.restart {
+        Exit::Restart
+    } else {
+        Exit::Quit
+    })
 }
 
 impl App {
@@ -335,6 +354,7 @@ impl App {
             plan_ask: None,
             quit_armed: false,
             quit: false,
+            restart: false,
             frame: 0,
             out: Vec::new(),
             planner_usage: Usage::default(),

@@ -163,10 +163,16 @@ async fn main() -> Result<()> {
                 }
             };
             let session = Arc::new(session);
-            let result = weft::ui::run(session.clone(), args.yes, think, resume).await;
+            let exit = weft::ui::run(session.clone(), args.yes, think, resume).await?;
             session.finish();
-            say_how_to_resume(&session);
-            result
+            match (exit, session.transcript_id()) {
+                (weft::ui::Exit::Restart, Some(id)) => restart_into(&config_file, &id, args.yes),
+                (weft::ui::Exit::Restart, None) => restart_into(&config_file, "", args.yes),
+                _ => {
+                    say_how_to_resume(&session);
+                    Ok(())
+                }
+            }
         }
         Some(Command::Run {
             task,
@@ -365,6 +371,25 @@ async fn check_models(config: &Config, session: &mut Session) {
 /// The earlier session `which` names, read from this folder's transcripts.
 fn saved(session: &Session, which: &str) -> Result<transcript::Saved> {
     transcript::find(&transcript::dir_for(&session.ctx.root)?, which)
+}
+
+/// `/restart`: this process becomes a fresh `weft resume <id>` on the
+/// installed binary, so a new build is picked up without losing the session.
+/// With no session to resume (nothing was done), it is a plain fresh start.
+fn restart_into(config_file: &PathBuf, id: &str, yes: bool) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let exe = std::env::current_exe().context("finding the weft binary")?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--config").arg(config_file);
+    if yes {
+        cmd.arg("--yes");
+    }
+    if !id.is_empty() {
+        cmd.arg("resume").arg(id);
+    }
+    // Rust: `exec` replaces this process; it only returns if it failed.
+    let err = cmd.exec();
+    Err(anyhow::anyhow!("could not restart weft: {err}"))
 }
 
 /// After a session that did something: the line that picks it up again. A

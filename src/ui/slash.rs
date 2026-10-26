@@ -22,6 +22,14 @@ impl App {
         };
         match command {
             "/quit" | "/exit" | "/q" => self.quit = true,
+            "/restart" => {
+                if self.running.is_some() {
+                    self.push(view::note_line("a task is running; esc stops it"));
+                } else {
+                    self.restart = true;
+                    self.quit = true;
+                }
+            }
             "/think" => {
                 self.think = !self.think;
                 self.push(view::note_line(&format!(

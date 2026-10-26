@@ -275,7 +275,11 @@ project, so nothing shows up in `git status` and the worker never stumbles on
 its own history. `weft sessions` lists a folder's sessions.
 
 **Resuming.** When you leave, weft prints the session's id and the command
-that picks it up again. `weft resume` reopens the folder's last session and
+that picks it up again. `/restart` does both at once: it leaves and comes
+straight back into the same session on the installed binary, which is how a
+new build is picked up without losing your place. Approvals given with `a`,
+the shift-tab mode and the undo history belong to the process and start
+afresh. `weft resume` reopens the folder's last session and
 `weft resume <id>` an earlier one; inside Weft, `/resume` lists them and `/resume 2` picks
 one. The screen replays each task with the first line of its answer, the
 worker gets its conversation back, and the file is appended to from there. The
