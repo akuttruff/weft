@@ -35,7 +35,7 @@ pub enum WorkerError {
     #[error("gave up after {0} tool rounds")]
     TooManyRounds(usize),
     #[error(
-        "the conversation no longer fits the model's window ({0} tokens); /compact or /clear, then try again"
+        "the conversation no longer fits the model's window ({0} tokens); what was done so far is kept; /compact or /clear, then carry on"
     )]
     ContextFull(u32),
 }

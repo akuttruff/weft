@@ -375,10 +375,22 @@ impl Session {
                     self.record(Record::Message { message: m.clone() });
                 }
             }
-            Err(_) => {
-                // The note goes with the next task instead.
-                messages.truncate(before);
-                *self.lead.lock().unwrap() = lead;
+            Err(e) => {
+                // What the task did before it stopped stays in the
+                // conversation, closed with a line saying why, so a resume or
+                // the next task can carry on from it.
+                let reason = match e {
+                    WorkerError::Cancelled => "the user stopped it".to_string(),
+                    other => other.to_string(),
+                };
+                if crate::agent::convo::close_interrupted(&mut messages, before, &reason) {
+                    for m in &messages[before..] {
+                        self.record(Record::Message { message: m.clone() });
+                    }
+                } else {
+                    // The note goes with the next task instead.
+                    *self.lead.lock().unwrap() = lead;
+                }
             }
         }
 

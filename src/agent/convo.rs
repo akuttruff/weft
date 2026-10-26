@@ -35,6 +35,39 @@ pub fn task_of(s: &str) -> Option<String> {
     Some(body.split("\n\n").next().unwrap_or(body).trim().to_string())
 }
 
+/// A task that stopped early (esc, the window full, the model gone) leaves
+/// its steps in the conversation rather than losing them: a trailing call
+/// without all its results is cut, and a closing line says what happened.
+/// Returns false when nothing of the task was left to keep.
+pub fn close_interrupted(messages: &mut Vec<Message>, from: usize, reason: &str) -> bool {
+    // The last turn with tool calls must have every result after it.
+    if let Some(i) = messages
+        .iter()
+        .rposition(|m| matches!(m, Message::Assistant { tool_calls, .. } if !tool_calls.is_empty()))
+        && i >= from
+        && let Message::Assistant { tool_calls, .. } = &messages[i]
+    {
+        let results = messages[i + 1..]
+            .iter()
+            .filter(|m| matches!(m, Message::Tool { .. }))
+            .count();
+        if results < tool_calls.len() {
+            messages.truncate(i);
+        }
+    }
+    // Only the task's own message survived: nothing was done, drop it too.
+    if messages.len() <= from + 1 {
+        messages.truncate(from);
+        return false;
+    }
+    messages.push(Message::Assistant {
+        content: format!("(stopped here: {reason})"),
+        reasoning: None,
+        tool_calls: vec![],
+    });
+    true
+}
+
 /// The tasks of a conversation and the answers they got, in order. A task is
 /// paired with the first answer that follows it; a fix round's answer belongs
 /// to the same task and is not a new pair.
@@ -81,6 +114,53 @@ mod tests {
         }
         assert_eq!(task_of(&format!("{}\n\n- fix", prompts::WORKER_FIX)), None);
         assert_eq!(task_of("## Earlier in this session\nnote"), None);
+    }
+
+    #[test]
+    fn an_interrupted_task_keeps_its_finished_steps() {
+        let call = |id: &str| crate::lm::ToolCall {
+            id: id.into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "a.rs"}),
+        };
+        let asst = |calls: Vec<crate::lm::ToolCall>| Message::Assistant {
+            content: String::new(),
+            reasoning: None,
+            tool_calls: calls,
+        };
+        let tool = |id: &str| Message::Tool {
+            call_id: id.into(),
+            content: "1\tfn".into(),
+        };
+        // Two whole rounds, then a call that never got its result.
+        let mut messages = vec![
+            Message::System("sys".into()),
+            Message::User("do it".into()),
+            asst(vec![call("a")]),
+            tool("a"),
+            asst(vec![call("b"), call("c")]),
+            tool("b"),
+        ];
+        assert!(close_interrupted(&mut messages, 1, "the user stopped it"));
+        assert_eq!(
+            messages.len(),
+            5,
+            "the half-answered turn went: {messages:?}"
+        );
+        assert!(
+            matches!(&messages[4], Message::Assistant { content, .. } if content.contains("stopped here"))
+        );
+        assert_eq!(
+            exchanges(&messages[1..]),
+            [(
+                "do it".to_string(),
+                "(stopped here: the user stopped it)".to_string()
+            )]
+        );
+        // Nothing beyond the task itself: nothing is kept.
+        let mut bare = vec![Message::System("sys".into()), Message::User("do it".into())];
+        assert!(!close_interrupted(&mut bare, 1, "x"));
+        assert_eq!(bare.len(), 1);
     }
 
     #[test]

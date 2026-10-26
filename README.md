@@ -87,7 +87,9 @@ a word, and so on.
    round by default.
 
 Tasks given one after another share the worker's conversation, so "now do the
-same for X" works.
+same for X" works. A task that stops early, by esc or by running out of
+room, keeps the steps it finished, closed with a line saying why, so the next
+task or a resume can carry on from them.
 
 **Plan mode.** A task given as `/plan <task>` stops once the plan is on the
 screen. Enter, or a typed "yes", lets the worker go; "no" or esc stops the
