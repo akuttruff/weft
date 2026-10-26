@@ -94,7 +94,9 @@ helper: a fresh worker on the same model with the same tools and its own
 context. Its edits and shell commands show on the screen and ask for approval
 like any other; only its report comes back to the worker that asked, so the
 files it read stay out of that context. The reviewer sees the helper's
-changes too. A helper cannot delegate in turn.
+changes too, its lines sit indented under the `Delegate` line, and an `a`
+given to either the worker or a helper holds for both. A helper cannot
+delegate in turn.
 
 A small model makes a good scout: a 9B answers in 5–15 seconds where the 122B
 takes 20–30. Small models also sometimes cite a file they never opened, so Weft
@@ -118,7 +120,8 @@ thousand generated tokens.
 
 `weft init` writes a starter config (and a `WEFT.md` in the current folder)
 where they are missing. At startup Weft checks that the configured models are
-loaded in LM Studio and says so if one is not. By hand:
+loaded in LM Studio and says so if one is not. A misspelt key in the config is
+an error that names the key, not a silent default. By hand:
 
 ```bash
 cargo install --path .
@@ -338,6 +341,8 @@ appears. In order:
    that filters its events. `delegate.rs`: the same shape with the full tool
    set and an `Arc<dyn Approver>` carried in through the tool context.
    `compact.rs`: slicing a conversation and rewriting it around a note.
+   `convo.rs`: the one place that writes and reads the shape of a task
+   message, with a round-trip test.
 4. **`src/mcp.rs`** — a JSON config with `serde`, servers started together with
    `join_all`, a type alias for a long generic, `Arc` sharing one connection
    between its tools, the same `Tool` trait implemented for someone else's tools.
@@ -347,13 +352,17 @@ appears. In order:
 6. **`src/hooks.rs`**, **`src/commands.rs`**, **`src/checkpoint.rs`** and
    **`src/tools/memory.rs`** — small modules around one idea each: a
    `tokio::process::Command` with a timeout and an environment, a file format
-   with a header, a `Mutex` of kept copies, an append to a file that stays
-   idempotent.
-7. **`src/session.rs`** and **`src/ui/`** — the session shared through an
+   with a header, a `Mutex` of kept copies that also shells out to `git`, an
+   append to a file that stays idempotent.
+7. **`src/models.rs`**, **`src/session.rs`** and **`src/ui/`** — one struct
+   that turns the config into model handles; the session shared through an
    `Arc` with `Mutex`es held only briefly, an `AtomicU32` read off a forwarding
    task; the screen as a `tokio::select!` loop over key events, agent events
-   and a tick; ratatui's inline viewport with `insert_before` for the
-   transcript; approvals as a `oneshot` channel.
+   and a tick, split across `events.rs`, `keys.rs`, `slash.rs` and `draw.rs`
+   with `impl` blocks in child modules; ratatui's inline viewport with
+   `insert_before` for the transcript; approvals as a `oneshot` channel;
+   `ui/tests.rs` driving it all through the key handlers with ratatui's test
+   backend.
 8. **`src/main.rs`** — clap subcommands, `spawn_blocking` for stdin, generics
    over a closure that returns a future.
 
