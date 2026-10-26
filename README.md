@@ -101,8 +101,9 @@ window. The review comes once at the end.
 **Plan mode.** A task given as `/plan <task>` stops once the plan is on the
 screen. Enter, or a typed "yes", lets the worker go; "no" or esc stops the
 task there; anything else you type is notes, and the planner writes the plan
-again with them in mind, up to three times. `confirm = "always"` in the config
-does this for every plan.
+again with them in mind, up to three times. A line starting with `/` runs as
+a command and the plan keeps waiting. `confirm = "always"` in the config does
+this for every plan.
 
 **Undo.** `/undo` puts back the files the last task changed, and the task
 before that on a second `/undo`. Weft's own edits and new files are always
@@ -278,7 +279,8 @@ command that picks it up again.
 **Resuming.** `weft resume` reopens the folder's last session and `weft
 resume <id>` an earlier one; inside weft, `/resume` lists them and a number
 picks one. The screen replays each task with the first line of its answer,
-and the last plan if there was one. The worker gets its conversation back,
+names the tasks compaction folded away, and shows the last plan if there was
+one. The worker gets its conversation back,
 with a note that the project may have changed and a fresh folder snapshot, and
 the file is appended to from there. `/restart` leaves and comes straight back
 into the same session on the installed binary, which is how a new build is
