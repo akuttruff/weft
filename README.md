@@ -272,8 +272,9 @@ model turn's tokens and seconds, the plan and the review. It lives outside the
 project, so nothing shows up in `git status` and the worker never stumbles on
 its own history. `weft sessions` lists a folder's sessions.
 
-**Resuming.** `weft resume` reopens the folder's last session and `weft resume
-<id>` an earlier one; inside Weft, `/resume` lists them and `/resume 2` picks
+**Resuming.** When you leave, weft prints the session's id and the command
+that picks it up again. `weft resume` reopens the folder's last session and
+`weft resume <id>` an earlier one; inside Weft, `/resume` lists them and `/resume 2` picks
 one. The screen replays each task with the first line of its answer, the
 worker gets its conversation back, and the file is appended to from there. The
 worker is also told the project may have changed, with a fresh folder snapshot,

@@ -165,6 +165,7 @@ async fn main() -> Result<()> {
             let session = Arc::new(session);
             let result = weft::ui::run(session.clone(), args.yes, think, resume).await;
             session.finish();
+            say_how_to_resume(&session);
             result
         }
         Some(Command::Run {
@@ -209,6 +210,9 @@ async fn main() -> Result<()> {
             };
             let result = run_once(&session, task, args.yes, think, mode, json).await;
             session.finish();
+            if !json {
+                say_how_to_resume(&session);
+            }
             result
         }
         Some(Command::Probe { question }) => probe(&config, question, args.think).await,
@@ -361,6 +365,14 @@ async fn check_models(config: &Config, session: &mut Session) {
 /// The earlier session `which` names, read from this folder's transcripts.
 fn saved(session: &Session, which: &str) -> Result<transcript::Saved> {
     transcript::find(&transcript::dir_for(&session.ctx.root)?, which)
+}
+
+/// After a session that did something: the line that picks it up again. A
+/// session that never ran a task has no file left to name.
+fn say_how_to_resume(session: &Session) {
+    if let Some(id) = session.transcript_id() {
+        println!("\n\x1b[2msession {id} · resume with  weft resume {id}\x1b[0m");
+    }
 }
 
 /// Keep a transcript of this session; without one the session still runs.
