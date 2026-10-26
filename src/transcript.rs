@@ -180,6 +180,9 @@ pub struct Saved {
     pub scout_usage: Usage,
     /// The worker's last prompt size.
     pub context: u32,
+    /// The plan written for the last task, if one was. A task stopped at its
+    /// plan leaves no messages behind, so this is the only place it lives.
+    pub last_plan: Option<String>,
 }
 
 /// Read one session file.
@@ -215,10 +218,14 @@ impl Saved {
             Record::Task { at, text } => {
                 self.last = at;
                 self.tasks.push(text);
+                self.last_plan = None;
             }
             Record::Message { message } => self.messages.push(message),
             Record::Event { at, event } => {
                 self.last = at;
+                if let AgentEvent::Plan { text } = &event {
+                    self.last_plan = Some(text.clone());
+                }
                 if let AgentEvent::TurnEnd { role, usage, .. } = event {
                     match role {
                         Role::Planner => self.planner_usage = add(self.planner_usage, usage),
@@ -246,6 +253,11 @@ impl Saved {
     /// The tasks and the answers they got, from the conversation as it stands.
     pub fn exchanges(&self) -> Vec<(String, String)> {
         crate::agent::convo::exchanges(&self.messages)
+    }
+
+    /// The last task and its plan, when the last task had one.
+    pub fn last_plan(&self) -> Option<(&str, &str)> {
+        Some((self.tasks.last()?.as_str(), self.last_plan.as_deref()?))
     }
 }
 
@@ -371,6 +383,31 @@ mod tests {
             saved.exchanges(),
             [("add a test".to_string(), "done".to_string())]
         );
+
+        // A plan is kept with its task, and a later task lets it go.
+        t.write(&Record::Task {
+            at: now(),
+            text: "sort the tiles".into(),
+        })
+        .unwrap();
+        t.write(&Record::Event {
+            at: now(),
+            event: AgentEvent::Plan {
+                text: "## Plan\n1. sort".into(),
+            },
+        })
+        .unwrap();
+        let saved = read(&t.path).unwrap();
+        assert_eq!(
+            saved.last_plan(),
+            Some(("sort the tiles", "## Plan\n1. sort"))
+        );
+        t.write(&Record::Task {
+            at: now(),
+            text: "another".into(),
+        })
+        .unwrap();
+        assert_eq!(read(&t.path).unwrap().last_plan(), None);
 
         // Appending after a reopen, and /clear, are honoured on the next read.
         let again = Transcript::open(&t.path).unwrap();

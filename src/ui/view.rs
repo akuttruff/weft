@@ -87,6 +87,16 @@ pub fn replay_lines(saved: &Saved) -> Vec<Line<'static>> {
             }
         }
     }
+    // The last task's plan, shown again: a task stopped at its plan has no
+    // exchange above, so its line comes first.
+    if let Some((task, plan)) = saved.last_plan() {
+        let shown = saved.exchanges().last().is_some_and(|(t, _)| t == task);
+        if !shown {
+            lines.extend(user_line(task));
+        }
+        lines.extend(note_line("  the plan from last time:"));
+        lines.extend(plan_lines(plan));
+    }
     lines
 }
 

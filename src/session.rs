@@ -160,12 +160,20 @@ impl Session {
         *self.messages.lock().unwrap() = messages;
         *self.transcript.lock().unwrap() = Some(Arc::new(t));
         *self.fresh_transcript.lock().unwrap() = false;
-        *self.lead.lock().unwrap() = Some(format!(
+        let mut lead = format!(
             "## Resumed\nThis conversation was saved {} and picked up again {}. The project may have changed since: read a file again before editing it, and do not trust earlier tool output to still hold.\n\n{}",
             day_of(&saved.last),
             day_of(&transcript::now()),
             snapshot(&self.ctx.root)
-        ));
+        );
+        // A plan the last task ended on (stopped, or left for later) comes
+        // along, so "go ahead with the plan" means something.
+        if let Some((task, plan)) = saved.last_plan() {
+            lead.push_str(&format!(
+                "## Plan from last time\nWritten for the task: {task}\n\n{plan}\n\nFollow it if the user asks you to carry on with it; otherwise it is only context.\n\n"
+            ));
+        }
+        *self.lead.lock().unwrap() = Some(lead);
         Ok(())
     }
 
