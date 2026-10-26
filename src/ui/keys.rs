@@ -112,6 +112,7 @@ impl App {
                 }
             }
             (KeyCode::Tab, _) if self.menu_open() => self.complete_menu(tx),
+            (KeyCode::BackTab, _) => self.set_mode(self.mode.next()),
             (KeyCode::Backspace, _) => {
                 self.input.backspace();
                 self.history_at = None;

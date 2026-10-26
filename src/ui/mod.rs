@@ -74,6 +74,50 @@ const COMMANDS: &[(&str, &str, bool)] = &[
     ("/quit", "leave", false),
 ];
 
+/// How much weft asks before acting. Shift-tab cycles through them in order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Permission {
+    /// Edits, new files and shell commands ask first.
+    Ask,
+    /// Edits and new files go through; shell commands still ask.
+    Edits,
+    /// Nothing asks.
+    All,
+    /// Every task plans first and waits for a word on the plan; approvals ask.
+    Plan,
+}
+
+impl Permission {
+    fn next(self) -> Self {
+        match self {
+            Self::Ask => Self::Edits,
+            Self::Edits => Self::All,
+            Self::All => Self::Plan,
+            Self::Plan => Self::Ask,
+        }
+    }
+
+    /// The word in the footer.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Edits => "edits auto",
+            Self::All => "all auto",
+            Self::Plan => "plan first",
+        }
+    }
+
+    /// What changed, for the transcript.
+    fn note(self) -> &'static str {
+        match self {
+            Self::Ask => "ask before edits, new files and shell commands",
+            Self::Edits => "edits and new files no longer ask; shell commands still do",
+            Self::All => "nothing asks",
+            Self::Plan => "every task plans first and waits for your word on the plan",
+        }
+    }
+}
+
 /// One line of the slash menu: a built-in command or a custom one.
 struct MenuItem {
     name: String,
@@ -144,10 +188,9 @@ struct Running {
 
 struct App {
     session: Arc<Session>,
-    yes: bool,
     think: bool,
-    /// Edits and new files run without asking; shell commands still ask.
-    accept_edits: bool,
+    /// How much weft asks before acting; shift-tab cycles it.
+    mode: Permission,
     input: Input,
     history: Vec<String>,
     history_at: Option<usize>,
@@ -277,9 +320,12 @@ impl App {
     fn new(session: Arc<Session>, yes: bool, think: bool) -> Self {
         Self {
             session,
-            yes,
             think,
-            accept_edits: false,
+            mode: if yes {
+                Permission::All
+            } else {
+                Permission::Ask
+            },
             input: Input::default(),
             history: Vec::new(),
             history_at: None,

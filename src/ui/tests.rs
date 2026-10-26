@@ -127,7 +127,7 @@ fn accept_toggles_and_shows_in_the_footer() {
     let (mut app, tx, _rx) = app();
     type_text(&mut app, &tx, "/accept");
     key(&mut app, &tx, KeyCode::Enter);
-    assert!(app.accept_edits);
+    assert_eq!(app.mode, Permission::Edits);
     assert!(pending(&app).contains("no longer ask"));
 
     let backend = TestBackend::new(100, 8);
@@ -140,7 +140,28 @@ fn accept_toggles_and_shows_in_the_footer() {
 
     type_text(&mut app, &tx, "/accept");
     key(&mut app, &tx, KeyCode::Enter);
-    assert!(!app.accept_edits);
+    assert_eq!(app.mode, Permission::Ask);
+}
+
+#[test]
+fn shift_tab_cycles_the_permission_mode() {
+    let (mut app, tx, _rx) = app();
+    assert_eq!(app.mode, Permission::Ask);
+    let mut seen = vec![];
+    for _ in 0..4 {
+        key(&mut app, &tx, KeyCode::BackTab);
+        seen.push(app.mode);
+    }
+    assert_eq!(
+        seen,
+        [
+            Permission::Edits,
+            Permission::All,
+            Permission::Plan,
+            Permission::Ask
+        ]
+    );
+    assert!(pending(&app).contains("nothing asks"));
 }
 
 #[test]

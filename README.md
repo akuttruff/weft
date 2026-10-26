@@ -35,7 +35,8 @@ shell commands ask first, and one key answers:
 
 ![Weft asking before an edit](docs/approval.png)
 
-Keys: enter sends · ctrl-j (or `\` + enter) for a newline · the readline
+Keys: enter sends · shift-tab cycles how much weft asks (ask → edits auto →
+all auto → plan first) · ctrl-j (or `\` + enter) for a newline · the readline
 keys edit the input (ctrl-a / ctrl-e to the ends, ctrl-b / ctrl-f by a
 character, alt-b / alt-f by a word, ctrl-k / ctrl-u kill to the end or the
 start, ctrl-w a word, ctrl-d a character) · ↑↓ history · esc
@@ -46,7 +47,8 @@ toggles the worker's thinking, `/clear` starts a fresh conversation,
 `/resume` lists this folder's earlier sessions and `/resume 2` picks one up,
 `/compact` folds the earlier tasks into a note now, `/undo` puts back the last
 task's files, `/accept` lets edits and new files through without asking for
-the rest of the session (shell commands still ask), `/cost` shows the tokens
+the rest of the session (shell commands still ask; shift-tab reaches the same
+mode and the others), `/cost` shows the tokens
 used, `/mcp` lists the MCP servers and their tools, `/help`, `/quit`.
 
 ## How a task flows

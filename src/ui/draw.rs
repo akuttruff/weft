@@ -168,13 +168,9 @@ impl App {
         };
         Line::from(Span::styled(
             format!(
-                "  {model} · {doing} · think {}{} · context {pct}% · {} in conversation · / for commands",
+                "  {model} · {doing} · think {} · {} · context {pct}% · {} in conversation · / for commands · shift-tab",
                 if self.think { "on" } else { "off" },
-                if self.accept_edits {
-                    " · edits auto"
-                } else {
-                    ""
-                },
+                self.mode.label(),
                 self.session.depth()
             ),
             Style::new().dim(),

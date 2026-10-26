@@ -29,16 +29,11 @@ impl App {
                     if self.think { "on" } else { "off" }
                 )));
             }
-            "/accept" => {
-                self.accept_edits = !self.accept_edits;
-                self.session
-                    .allow(&["edit_file", "write_file"], self.accept_edits);
-                self.push(view::note_line(if self.accept_edits {
-                    "edits and new files no longer ask; shell commands still do · /accept to ask again"
-                } else {
-                    "edits and new files ask again"
-                }));
-            }
+            "/accept" => self.set_mode(if self.mode == Permission::Edits {
+                Permission::Ask
+            } else {
+                Permission::Edits
+            }),
             "/clear" => {
                 self.session.clear();
                 self.push(view::note_line("fresh conversation"));
@@ -144,7 +139,7 @@ impl App {
                         ),
                     ]));
                 }
-                lines.push(Line::from(Span::styled("  enter sends · ctrl-j or \\ + enter for a newline · readline keys edit (ctrl-a/e/b/f/k/u/w/d, alt-b/f) · ↑↓ history · esc stops a task · y/a/n answer approvals · ctrl-c twice leaves", Style::new().dim())));
+                lines.push(Line::from(Span::styled("  enter sends · shift-tab cycles ask / edits auto / all auto / plan first · ctrl-j or \\ + enter for a newline · readline keys edit (ctrl-a/e/b/f/k/u/w/d, alt-b/f) · ↑↓ history · esc stops a task · y/a/n answer approvals · ctrl-c twice leaves", Style::new().dim())));
                 self.push(lines);
             }
             "/plan" | "/go" if rest.is_empty() => {
@@ -167,7 +162,14 @@ impl App {
                     ))),
                 }
             }
-            _ => self.start(line, Mode::Auto, tx),
+            _ => {
+                let mode = if self.mode == Permission::Plan {
+                    Mode::Plan
+                } else {
+                    Mode::Auto
+                };
+                self.start(line, mode, tx)
+            }
         }
     }
 
@@ -233,6 +235,18 @@ impl App {
         self.push(view::replay_lines(&saved));
     }
 
+    /// Switch the permission mode, keeping the session's edit approvals in step.
+    pub(super) fn set_mode(&mut self, mode: Permission) {
+        self.mode = mode;
+        self.session
+            .allow(&["edit_file", "write_file"], mode == Permission::Edits);
+        self.push(view::note_line(&format!(
+            "{} · {}",
+            mode.label(),
+            mode.note()
+        )));
+    }
+
     /// Hand a task to the session on its own tokio task; its events come back through `tx`.
     pub(super) fn start(&mut self, task: String, mode: Mode, tx: &mpsc::Sender<UiMsg>) {
         self.start_shown(task.clone(), task, mode, tx);
@@ -264,7 +278,7 @@ impl App {
 
         let session = self.session.clone();
         let think = self.think;
-        let yes = self.yes;
+        let yes = self.mode == Permission::All;
         let tx = tx.clone();
         tokio::spawn(async move {
             let (events, mut agent_rx) = mpsc::channel::<AgentEvent>(256);
