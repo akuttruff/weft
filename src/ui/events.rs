@@ -141,9 +141,14 @@ impl App {
                 tasks,
             } => {
                 self.context = after;
+                self.flush_text();
+                let what = if tasks == 0 {
+                    "this task's earlier steps".to_string()
+                } else {
+                    format!("{tasks} earlier task{}", if tasks == 1 { "" } else { "s" })
+                };
                 self.push(view::note_line(&format!(
-                    "  compacted: {tasks} earlier task{} folded into a note · context {} → ~{} tokens",
-                    if tasks == 1 { "" } else { "s" },
+                    "  compacted: {what} folded into a note · context {} → ~{} tokens",
                     view::k(before),
                     view::k(after),
                 )));

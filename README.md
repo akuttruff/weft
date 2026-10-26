@@ -280,8 +280,10 @@ mode and the undo history belong to the process and start afresh.
 `[compact] at`, the earlier tasks are folded into a handover note written by
 the scout's model: what was done, which files changed and how, decisions,
 loose ends. The last task stays verbatim and the worker carries on from the
-note. `/compact` does it on demand. Inside a task, old tool results are
-dropped as the window fills, newest kept.
+note. `/compact` does it on demand. Inside a task, as the window fills, old tool
+results and the file text of old edits are dropped first, newest kept; when
+that is not enough, the task's earlier steps are folded into a progress note
+and the worker carries on.
 
 ## Images
 

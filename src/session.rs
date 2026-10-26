@@ -341,6 +341,7 @@ impl Session {
             .with_checkpoint(checkpoint.clone())
             .with_approver(approver.clone())
             .with_allowed(shared.clone());
+        let digest = self.models.scout();
         let mut tandem = Tandem {
             planner: &self.planner,
             reviewer: &self.reviewer,
@@ -358,6 +359,7 @@ impl Session {
             confirm: self.confirm,
             lead: lead.clone().unwrap_or_default(),
             window: self.window,
+            digest: Some(digest.as_ref()),
         };
         let result = tandem.run(task, mode, &mut messages).await;
         // What the task's own worker approved joins the shared set.

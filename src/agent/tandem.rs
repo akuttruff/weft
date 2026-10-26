@@ -71,6 +71,8 @@ pub struct Tandem<'a> {
     pub lead: String,
     /// The worker's context window, for the in-task guard.
     pub window: u32,
+    /// The model that folds a long task's earlier rounds into a note.
+    pub digest: Option<&'a dyn Model>,
 }
 
 impl Tandem<'_> {
@@ -257,7 +259,8 @@ impl Tandem<'_> {
             self.events.clone(),
         )
         .allowed(std::mem::take(&mut self.allowed))
-        .window(self.window);
+        .window(self.window)
+        .digest(self.digest);
         worker.cancel = self.cancel.clone();
         let result = worker.run(messages).await;
         self.allowed = std::mem::take(&mut worker.allowed);
@@ -695,6 +698,7 @@ mod tests {
             review_rounds: 2,
             lead: String::new(),
             window: crate::config::DEFAULT_WINDOW,
+            digest: None,
             confirm: Confirm::Asked,
         };
         let mut messages = vec![Message::System("sys".into())];
@@ -787,6 +791,7 @@ mod tests {
             confirm: Confirm::Asked,
             lead: String::new(),
             window: crate::config::DEFAULT_WINDOW,
+            digest: None,
         };
         let mut messages = vec![];
         let out = tandem
@@ -824,6 +829,7 @@ mod tests {
             confirm: Confirm::Asked,
             lead: String::new(),
             window: crate::config::DEFAULT_WINDOW,
+            digest: None,
         };
         let mut messages = vec![
             Message::System("sys".into()),
@@ -1007,6 +1013,7 @@ mod tests {
             confirm: Confirm::Asked,
             lead: String::new(),
             window: crate::config::DEFAULT_WINDOW,
+            digest: None,
         };
         let mut messages = vec![Message::System("sys".into())];
         let out = tandem

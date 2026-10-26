@@ -76,6 +76,14 @@ You are writing a handover note for a coding agent, the worker, whose conversati
 - Facts worth keeping: commands that worked, paths, names.
 Plain bullets, no preamble, no code longer than a line.";
 
+/// The progress note that replaces the earlier rounds of a task still under way.
+pub const COMPACT_TASK: &str = "\
+You are condensing the earlier part of a task that a coding agent, the worker, is still in the middle of, so it can go on with less in its window. Below are the worker's steps so far: its tool calls (results cut short) and what it said. Write a progress note under 300 words:
+- What the task is and what has been done, as the current state of each file created or changed, one line each.
+- What remains to be done.
+- Anything learned: commands that worked, errors hit, decisions made.
+Plain bullets, no preamble, no code longer than a line.";
+
 /// A one-word call on whether a task needs a plan first.
 pub const TRIAGE: &str = "\
 Decide whether the request below needs a plan before work starts. Answer with exactly one word: PLAN if it changes code in more than one place, touches more than one file, or the approach is not obvious; GO if it is a question, a lookup, or a small change in one spot.";

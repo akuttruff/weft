@@ -96,6 +96,55 @@ pub async fn compact(
     })
 }
 
+/// Mid-task: fold the rounds of a task from `from` up to the last `keep`
+/// messages into a progress note, so the worker can carry on with room.
+/// `None` when there is too little to fold. The task's own message, before
+/// `from`, stays as it was.
+pub async fn fold_task(
+    model: &dyn Model,
+    ctx: &Ctx,
+    events: mpsc::Sender<AgentEvent>,
+    cancel: CancellationToken,
+    messages: &mut Vec<Message>,
+    from: usize,
+    keep: usize,
+) -> Result<Option<u32>, WorkerError> {
+    let mut end = messages.len().saturating_sub(keep);
+    // Never cut between a call and its result: the kept tail starts at a turn.
+    while end > from && matches!(messages.get(end), Some(Message::Tool { .. })) {
+        end -= 1;
+    }
+    if end < from + 4 {
+        return Ok(None);
+    }
+    let old: Vec<Message> = messages[from..end].to_vec();
+
+    let empty = Registry::empty();
+    let mut writer = Worker::new(model, &empty, ctx, &Yes, events)
+        .role(Role::Scout)
+        .rounds(1);
+    writer.cancel = cancel;
+    let mut convo = vec![
+        Message::System(prompts::COMPACT_TASK.into()),
+        Message::User(render(&old)),
+    ];
+    let note = writer.run(&mut convo).await?.answer;
+
+    let replacement = vec![
+        Message::User(format!(
+            "## Progress so far on this task\nThe earlier steps were condensed into this note; read a file again before editing it.\n\n{}",
+            note.trim()
+        )),
+        Message::Assistant {
+            content: "Noted. Carrying on.".into(),
+            reasoning: None,
+            tool_calls: vec![],
+        },
+    ];
+    messages.splice(from..end, replacement);
+    Ok(Some(estimate(messages)))
+}
+
 /// Everything before the last task, and the last task itself. A single task
 /// is all "old": there is nothing newer to keep.
 pub fn split(messages: &[Message]) -> (&[Message], &[Message]) {

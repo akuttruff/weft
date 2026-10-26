@@ -18,6 +18,10 @@ const MAX_TOKENS: u32 = 8_000;
 const MARGIN: u32 = 4_000;
 /// How many of the latest tool results stay when old ones are dropped.
 const KEEP_RESULTS: usize = 3;
+/// How many of the latest messages stay verbatim when a task is folded.
+const KEEP_MESSAGES: usize = 4;
+/// What the text of an old edit or new file is replaced with.
+pub const OMITTED: &str = "(omitted to make room; the file on disk has it)";
 /// What an old tool result is replaced with.
 pub const DROPPED: &str =
     "(dropped to make room in the context; call the tool again if you need it)";
@@ -62,6 +66,9 @@ pub struct Worker<'a> {
     pub max_rounds: usize,
     /// The model's context window in tokens; 0 switches the guard off.
     pub window: u32,
+    /// A small model that can fold this task's earlier rounds into a note
+    /// when dropping old results is not enough. None: the task stops instead.
+    pub digest: Option<&'a dyn Model>,
 }
 
 impl<'a> Worker<'a> {
@@ -85,7 +92,14 @@ impl<'a> Worker<'a> {
             role: Role::Worker,
             max_rounds: MAX_ROUNDS,
             window: crate::config::DEFAULT_WINDOW,
+            digest: None,
         }
+    }
+
+    /// The model that folds a long task's earlier rounds into a note.
+    pub fn digest(mut self, digest: Option<&'a dyn Model>) -> Self {
+        self.digest = digest;
+        self
     }
 
     // Rust: setters that take `self` by value and give it back let the caller
@@ -119,6 +133,8 @@ impl Worker<'_> {
     pub async fn run(&mut self, messages: &mut Vec<Message>) -> Result<Outcome, WorkerError> {
         let mut outcome = Outcome::default();
         let tools = self.registry.specs();
+        // Where this run's own rounds begin; a fold keeps what came before.
+        let own_rounds_from = messages.len();
 
         for round in 1..=self.max_rounds {
             let req = Request {
@@ -173,24 +189,56 @@ impl Worker<'_> {
                 });
             }
 
-            // Near the window, old tool results go first: the model has read
-            // them, and it can read again what it still needs. With nothing
-            // left to drop, the task stops rather than failing on the server.
+            // Near the window, old tool results and the file contents of old
+            // edits go first: the model has seen them, and the disk has them.
+            // When nothing is left to drop, the task's earlier rounds are
+            // folded into a progress note; without a model for that, the task
+            // stops rather than failing on the server.
             let ceiling = self.window.saturating_sub(MAX_TOKENS + MARGIN);
             if self.window > 0 && reply.usage.prompt_tokens >= ceiling {
-                let mut dropped = drop_old_results(messages, KEEP_RESULTS);
+                let before = reply.usage.prompt_tokens;
+                let mut dropped = drop_old_results(messages, KEEP_RESULTS)
+                    + shrink_old_calls(messages, KEEP_RESULTS);
                 if dropped == 0 {
                     // Still too big with the last few kept: keep only the newest.
-                    dropped = drop_old_results(messages, 1);
+                    dropped = drop_old_results(messages, 1) + shrink_old_calls(messages, 1);
                 }
-                if dropped == 0 {
-                    return Err(WorkerError::ContextFull(reply.usage.prompt_tokens));
+                if dropped > 0 {
+                    self.emit(AgentEvent::Trimmed {
+                        dropped,
+                        tokens: before,
+                    })
+                    .await;
+                    continue;
                 }
-                self.emit(AgentEvent::Trimmed {
-                    dropped,
-                    tokens: reply.usage.prompt_tokens,
-                })
-                .await;
+                // Rust: the fold runs a worker of its own, so `run` would
+                // contain itself; boxing the inner future breaks the cycle.
+                let folded = match self.digest {
+                    Some(digest) => {
+                        Box::pin(super::compact::fold_task(
+                            digest,
+                            self.ctx,
+                            self.events.clone(),
+                            self.cancel.clone(),
+                            messages,
+                            own_rounds_from,
+                            KEEP_MESSAGES,
+                        ))
+                        .await?
+                    }
+                    None => None,
+                };
+                match folded {
+                    Some(after) => {
+                        self.emit(AgentEvent::Compacted {
+                            before,
+                            after,
+                            tasks: 0,
+                        })
+                        .await
+                    }
+                    None => return Err(WorkerError::ContextFull(before)),
+                }
             }
         }
         Err(WorkerError::TooManyRounds(self.max_rounds))
@@ -285,6 +333,44 @@ pub fn drop_old_results(messages: &mut [Message], keep: usize) -> usize {
         }
     }
     dropped
+}
+
+/// Blank the file text inside old `edit_file` and `write_file` calls, all but
+/// the last `keep` assistant turns with calls; how many went. The screen has
+/// shown the diff and the disk holds the result, so the model loses nothing.
+pub fn shrink_old_calls(messages: &mut [Message], keep: usize) -> usize {
+    let total = messages
+        .iter()
+        .filter(|m| matches!(m, Message::Assistant { tool_calls, .. } if !tool_calls.is_empty()))
+        .count();
+    let mut seen = 0;
+    let mut shrunk = 0;
+    for m in messages.iter_mut() {
+        let Message::Assistant { tool_calls, .. } = m else {
+            continue;
+        };
+        if tool_calls.is_empty() {
+            continue;
+        }
+        seen += 1;
+        if seen + keep > total {
+            continue;
+        }
+        for call in tool_calls.iter_mut() {
+            let Some(args) = call.arguments.as_object_mut() else {
+                continue;
+            };
+            for key in ["content", "new_string", "old_string"] {
+                if let Some(v) = args.get_mut(key)
+                    && v.as_str().is_some_and(|s| s.len() > 200)
+                {
+                    *v = serde_json::Value::String(OMITTED.into());
+                    shrunk += 1;
+                }
+            }
+        }
+    }
+    shrunk
 }
 
 fn add(a: Usage, b: Usage) -> Usage {
@@ -554,5 +640,97 @@ mod tests {
             std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
             "bye\n"
         );
+    }
+    #[tokio::test]
+    async fn when_nothing_can_be_dropped_the_task_is_folded_and_goes_on() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let registry = Registry::builtin();
+        let ctx = Ctx::new(dir.path().to_path_buf());
+        let big = |n: u32| Reply {
+            tool_calls: vec![call("c", "read_file", json!({"path": "a.txt"}))],
+            usage: Usage {
+                prompt_tokens: n,
+                completion_tokens: 1,
+                reasoning_tokens: 0,
+            },
+            ..Default::default()
+        };
+        // Three small rounds whose results are too short to drop, then one
+        // that reports the window nearly full, then the answer.
+        let model = Scripted {
+            replies: Mutex::new(vec![
+                big(1_000),
+                big(1_000),
+                big(1_000),
+                big(20_000),
+                Reply {
+                    content: "Finished.".into(),
+                    ..Default::default()
+                },
+            ]),
+            seen: Mutex::new(vec![]),
+        };
+        let digest = Scripted {
+            replies: Mutex::new(vec![Reply {
+                content: "- a.txt read a few times; nothing changed yet.".into(),
+                ..Default::default()
+            }]),
+            seen: Mutex::new(vec![]),
+        };
+        let (events, mut rx) = mpsc::channel(64);
+        let mut worker = Worker::new(&model, &registry, &ctx, &Yes, events)
+            .window(30_000)
+            .digest(Some(&digest));
+        let mut messages = vec![
+            Message::System("sys".into()),
+            Message::User("look around".into()),
+        ];
+        let out = worker.run(&mut messages).await.unwrap();
+        assert_eq!(out.answer, "Finished.");
+        let folded = messages
+            .iter()
+            .position(|m| matches!(m, Message::User(s) if s.starts_with("## Progress so far")))
+            .expect("a progress note replaced the early rounds");
+        assert_eq!(folded, 2, "right after the task's own message");
+        assert!(matches!(&messages[1], Message::User(s) if s == "look around"));
+        // The digest saw the early rounds, and the screen heard about the fold.
+        assert!(format!("{:?}", digest.seen.lock().unwrap()[0][1]).contains("read_file"));
+        drop(worker);
+        let mut folds = 0;
+        while let Some(evt) = rx.recv().await {
+            if matches!(evt, AgentEvent::Compacted { tasks: 0, .. }) {
+                folds += 1;
+            }
+        }
+        assert_eq!(folds, 1);
+    }
+
+    #[test]
+    fn old_file_texts_in_calls_are_blanked_but_the_newest_stay() {
+        let edit = |n: usize| Message::Assistant {
+            content: String::new(),
+            reasoning: None,
+            tool_calls: vec![call(
+                &format!("e{n}"),
+                "write_file",
+                json!({"path": format!("f{n}.rs"), "content": "y".repeat(500)}),
+            )],
+        };
+        let mut messages = vec![edit(1), edit(2), edit(3), edit(4)];
+        assert_eq!(shrink_old_calls(&mut messages, 3), 1);
+        assert_eq!(shrink_old_calls(&mut messages, 1), 2);
+        let texts: Vec<String> = messages
+            .iter()
+            .map(|m| match m {
+                Message::Assistant { tool_calls, .. } => tool_calls[0].arguments["content"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert!(texts[..3].iter().all(|t| t == OMITTED));
+        assert_eq!(texts[3].len(), 500, "the newest call keeps its text");
     }
 }
