@@ -55,11 +55,14 @@ pub struct Session {
     pub warnings: Vec<String>,
     /// The servers themselves, kept so their processes live as long as the session.
     servers: Vec<mcp::Server>,
-    /// Tools approved for the whole session, carried from task to task.
+    /// Tools approved for the whole session. The running task's workers and
+    /// helpers share this very set through the tool context, so an `a` on a
+    /// prompt, a helper's `a`, and `/accept` typed mid-task all land in one
+    /// place and take effect at once.
     // Rust: a `Mutex` because the UI runs tasks on spawned tokio tasks that
     // share this struct through an `Arc`; the lock is only ever held briefly,
     // never across an `.await`.
-    allowed: Mutex<HashSet<String>>,
+    allowed: Arc<Mutex<HashSet<String>>>,
     messages: Mutex<Vec<Message>>,
     /// The session file, once `start_transcript` has opened one.
     transcript: Mutex<Option<Arc<Transcript>>>,
@@ -103,7 +106,7 @@ impl Session {
             mcp: Vec::new(),
             warnings: Vec::new(),
             servers: Vec::new(),
-            allowed: Mutex::new(HashSet::new()),
+            allowed: Arc::default(),
             messages: Mutex::new(vec![Message::System(prompts::WORKER.into())]),
             transcript: Mutex::new(None),
             fresh_transcript: Mutex::new(false),
@@ -269,7 +272,7 @@ impl Session {
         cancel: CancellationToken,
     ) -> Result<TandemOutcome, WorkerError> {
         let mut messages = std::mem::take(&mut *self.messages.lock().unwrap());
-        let allowed = std::mem::take(&mut *self.allowed.lock().unwrap());
+        let allowed = self.allowed.lock().unwrap().clone();
         let lead = self.lead.lock().unwrap().take();
         let before = messages.len();
         let began = Instant::now();
@@ -323,7 +326,7 @@ impl Session {
         if let Some(cp) = &checkpoint {
             cp.note_git_before(&self.ctx.root);
         }
-        let shared = Arc::new(Mutex::new(allowed.clone()));
+        let shared = self.allowed.clone();
         let ctx = self
             .ctx
             .for_task(Some(inner.clone()), cancel.clone())
@@ -349,12 +352,11 @@ impl Session {
             window: self.window,
         };
         let result = tandem.run(task, mode, &mut messages).await;
-        {
-            // What the task approved, and what any helper approved.
-            let mut allowed = self.allowed.lock().unwrap();
-            *allowed = std::mem::take(&mut tandem.allowed);
-            allowed.extend(shared.lock().unwrap().iter().cloned());
-        }
+        // What the task's own worker approved joins the shared set.
+        shared
+            .lock()
+            .unwrap()
+            .extend(std::mem::take(&mut tandem.allowed));
         drop(tandem);
 
         match &result {
