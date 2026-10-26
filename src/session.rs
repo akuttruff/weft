@@ -574,4 +574,22 @@ model = "w"
             "on 2026-10-25 at 14:19"
         );
     }
+
+    #[test]
+    fn allow_reaches_the_set_a_running_task_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Session::new(&config(), dir.path().to_path_buf());
+        // The context a task gets shares the session's set, so a later
+        // `/accept` is visible through it without any handing back.
+        let ctx = session
+            .ctx
+            .for_task(None, Default::default())
+            .with_allowed(session.allowed.clone());
+        assert!(!ctx.allowed.lock().unwrap().contains("edit_file"));
+        session.allow(&["edit_file", "write_file"], true);
+        assert!(ctx.allowed.lock().unwrap().contains("edit_file"));
+        session.allow(&["edit_file"], false);
+        assert!(!ctx.allowed.lock().unwrap().contains("edit_file"));
+        assert!(ctx.allowed.lock().unwrap().contains("write_file"));
+    }
 }
