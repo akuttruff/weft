@@ -67,9 +67,12 @@ Tasks given one after another in a session share the worker's conversation, so
 "now do the same for X" works.
 
 **Undo.** `/undo` puts back the files the last task changed, and the one
-before that on a second `/undo`, for the rest of the session. It covers
-weft's own edits and new files, not what a shell command did to the tree.
-The worker is told on its next task.
+before that on a second `/undo`, for the rest of the session. Weft's own
+edits and new files are always covered. In a git repository, so is what a
+shell command did: git keeps a copy of the tracked tree before each task
+(`git stash create`, which leaves the tree alone), and undo restores from it
+and removes files that appeared. Your own uncommitted edits from before the
+task survive. The worker is told on its next task.
 
 **Plan mode.** A task given as `/plan <task>` stops once the plan is on the
 screen. Enter lets the worker go; typing notes and pressing enter sends the

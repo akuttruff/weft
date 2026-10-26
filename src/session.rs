@@ -320,6 +320,9 @@ impl Session {
         });
         // The tools learn this task's stop signal, event stream and checkpoint.
         let checkpoint = self.checkpoint_dir().map(|d| Arc::new(Checkpoint::new(d)));
+        if let Some(cp) = &checkpoint {
+            cp.note_git_before(&self.ctx.root);
+        }
         let shared = Arc::new(Mutex::new(allowed.clone()));
         let ctx = self
             .ctx
@@ -405,6 +408,7 @@ impl Session {
         drop(inner);
         let _ = forward.await;
         if let Some(cp) = checkpoint {
+            cp.note_git_after(&self.ctx.root);
             if cp.is_empty() {
                 cp.discard();
             } else {
