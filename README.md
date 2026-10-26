@@ -1,15 +1,19 @@
 # <img src="docs/icon.png" width="32" alt=""> Weft
 
 A coding agent for the terminal that runs local models in tandem through
-[LM Studio](https://lmstudio.ai), in Rust.
+[LM Studio](https://lmstudio.ai). I built it in Rust in order to become better
+acquainted with the language.
 
 - **The planner** (a dense model at medium reasoning effort) writes a short plan
   and later reviews the diff.
 - **The worker** (a fast mixture-of-experts model, thinking off) runs the tool
   loop: reads, searches, edits, runs commands, follows the plan.
+- **The scout** (a small model) answers the other two's questions about where
+  things live, and writes the note a long conversation is folded into.
 
-Built on a Mac Studio with `qwen/qwen3.8-27b` as the planner and
-`qwen3.5-122b-a10b` as the worker, but any two models LM Studio serves will do.
+Built on a Mac Studio with `qwen/qwen3.8-27b` as the planner,
+`qwen3.5-122b-a10b` as the worker and `qwen/qwen3.5-9b` as the scout, but any
+models LM Studio serves will do.
 
 ## In the terminal
 
