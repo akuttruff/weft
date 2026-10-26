@@ -13,6 +13,8 @@ mod events;
 mod input;
 mod keys;
 mod slash;
+#[cfg(test)]
+mod tests;
 mod view;
 
 use input::Input;
@@ -203,31 +205,7 @@ async fn event_loop(
     think: bool,
     resume: Option<Saved>,
 ) -> Result<()> {
-    let mut app = App {
-        session,
-        yes,
-        think,
-        accept_edits: false,
-        input: Input::default(),
-        history: Vec::new(),
-        history_at: None,
-        menu_at: 0,
-        running: None,
-        ask: None,
-        plan_ask: None,
-        quit_armed: false,
-        quit: false,
-        frame: 0,
-        out: Vec::new(),
-        planner_usage: Usage::default(),
-        worker_usage: Usage::default(),
-        scout_usage: Usage::default(),
-        context: 0,
-        tasks: 0,
-        flush_failed: false,
-        last_tool: (String::new(), serde_json::Value::Null),
-        sessions: Vec::new(),
-    };
+    let mut app = App::new(session, yes, think);
     let (tx, mut rx) = mpsc::channel::<UiMsg>(512);
     let mut keys = EventStream::new();
     let mut tick = tokio::time::interval(TICK);
@@ -293,6 +271,34 @@ async fn event_loop(
 }
 
 impl App {
+    fn new(session: Arc<Session>, yes: bool, think: bool) -> Self {
+        Self {
+            session,
+            yes,
+            think,
+            accept_edits: false,
+            input: Input::default(),
+            history: Vec::new(),
+            history_at: None,
+            menu_at: 0,
+            running: None,
+            ask: None,
+            plan_ask: None,
+            quit_armed: false,
+            quit: false,
+            frame: 0,
+            out: Vec::new(),
+            planner_usage: Usage::default(),
+            worker_usage: Usage::default(),
+            scout_usage: Usage::default(),
+            context: 0,
+            tasks: 0,
+            flush_failed: false,
+            last_tool: (String::new(), serde_json::Value::Null),
+            sessions: Vec::new(),
+        }
+    }
+
     // ---- Transcript -----------------------------------------------------------
 
     fn push(&mut self, lines: Vec<Line<'static>>) {
