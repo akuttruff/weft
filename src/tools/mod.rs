@@ -11,8 +11,9 @@ pub mod image;
 pub mod memory;
 pub mod search;
 
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -37,6 +38,9 @@ pub struct Ctx {
     pub checkpoint: Option<Arc<Checkpoint>>,
     /// Who answers approval questions, for a tool that runs a worker of its own (the delegate).
     pub approver: Option<Arc<dyn Approver>>,
+    /// Tools approved for the whole session, shared so a helper's `always`
+    /// counts for the rest of the session too.
+    pub allowed: Arc<Mutex<HashSet<String>>>,
 }
 
 impl std::fmt::Debug for Ctx {
@@ -53,6 +57,7 @@ impl Ctx {
             events: None,
             checkpoint: None,
             approver: None,
+            allowed: Arc::default(),
         }
     }
 
@@ -65,7 +70,13 @@ impl Ctx {
             events,
             checkpoint: None,
             approver: None,
+            allowed: Arc::default(),
         }
+    }
+
+    pub fn with_allowed(mut self, allowed: Arc<Mutex<HashSet<String>>>) -> Self {
+        self.allowed = allowed;
+        self
     }
 
     pub fn with_checkpoint(mut self, checkpoint: Option<Arc<Checkpoint>>) -> Self {

@@ -77,7 +77,8 @@ impl Tool for Delegate {
             approver.as_ref(),
             events,
         )
-        .rounds(DELEGATE_ROUNDS);
+        .rounds(DELEGATE_ROUNDS)
+        .allowed(ctx.allowed.lock().unwrap().clone());
         let mut convo = vec![
             Message::System(prompts::WORKER.into()),
             Message::User(format!(
@@ -87,6 +88,11 @@ impl Tool for Delegate {
             )),
         ];
         let result = worker.run(&mut convo).await;
+        // An `always` given to the helper holds for the rest of the session.
+        ctx.allowed
+            .lock()
+            .unwrap()
+            .extend(std::mem::take(&mut worker.allowed));
         drop(worker);
         let _ = forward.await;
 
@@ -168,6 +174,8 @@ mod tests {
             report,
             "Changed a.txt:1.\n\nFiles the helper changed: a.txt"
         );
+        // `Yes` answers `always`, and that reaches the shared set.
+        assert!(ctx.allowed.lock().unwrap().contains("edit_file"));
         assert_eq!(
             std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
             "two\n"

@@ -320,11 +320,13 @@ impl Session {
         });
         // The tools learn this task's stop signal, event stream and checkpoint.
         let checkpoint = self.checkpoint_dir().map(|d| Arc::new(Checkpoint::new(d)));
+        let shared = Arc::new(Mutex::new(allowed.clone()));
         let ctx = self
             .ctx
             .for_task(Some(inner.clone()), cancel.clone())
             .with_checkpoint(checkpoint.clone())
-            .with_approver(approver.clone());
+            .with_approver(approver.clone())
+            .with_allowed(shared.clone());
         let mut tandem = Tandem {
             planner: &self.planner,
             reviewer: &self.reviewer,
@@ -344,7 +346,12 @@ impl Session {
             window: self.window,
         };
         let result = tandem.run(task, mode, &mut messages).await;
-        *self.allowed.lock().unwrap() = std::mem::take(&mut tandem.allowed);
+        {
+            // What the task approved, and what any helper approved.
+            let mut allowed = self.allowed.lock().unwrap();
+            *allowed = std::mem::take(&mut tandem.allowed);
+            allowed.extend(shared.lock().unwrap().iter().cloned());
+        }
         drop(tandem);
 
         match &result {
