@@ -416,7 +416,7 @@ mod tests {
         assert!(saved.messages.is_empty());
         assert_eq!(
             saved.tasks.len(),
-            1,
+            3,
             "the task list keeps the whole history"
         );
     }
