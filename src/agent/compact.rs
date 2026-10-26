@@ -3,8 +3,6 @@
 //! and the last task stays verbatim. The worker then carries on from the
 //! note, the way a colleague would from a good summary.
 
-use std::collections::HashSet;
-
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -66,18 +64,10 @@ pub async fn compact(
     }
 
     let empty = Registry::empty();
-    let mut writer = Worker {
-        model,
-        registry: &empty,
-        ctx,
-        approver: &Yes,
-        events,
-        cancel,
-        allowed: HashSet::new(),
-        role: Role::Scout,
-        max_rounds: 1,
-        window: crate::config::DEFAULT_WINDOW,
-    };
+    let mut writer = Worker::new(model, &empty, ctx, &Yes, events)
+        .role(Role::Scout)
+        .rounds(1);
+    writer.cancel = cancel;
     let mut convo = vec![
         Message::System(prompts::COMPACT.into()),
         Message::User(render(old)),

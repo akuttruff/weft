@@ -3,7 +3,6 @@
 //! like any other tool; the files it reads stay in its own context, and only
 //! its answer (paths, line numbers, a few sentences) comes back.
 
-use std::collections::HashSet;
 use std::path::Path;
 
 use async_trait::async_trait;
@@ -73,18 +72,9 @@ impl Tool for Scout {
             }
         });
 
-        let mut worker = Worker {
-            model: self.model.as_ref(),
-            registry: &registry,
-            ctx,
-            approver: &Yes,
-            events,
-            cancel: ctx.cancel.clone(),
-            allowed: HashSet::new(),
-            role: Role::Scout,
-            max_rounds: SCOUT_ROUNDS,
-            window: crate::config::DEFAULT_WINDOW,
-        };
+        let mut worker = Worker::new(self.model.as_ref(), &registry, ctx, &Yes, events)
+            .role(Role::Scout)
+            .rounds(SCOUT_ROUNDS);
         let mut convo = vec![
             Message::System(prompts::SCOUT.into()),
             Message::User(format!("{}## Question\n{question}", snapshot(&ctx.root))),
@@ -229,12 +219,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.rs"), "fn health() {}\n").unwrap();
         let (events, mut rx) = mpsc::channel(64);
-        let ctx = Ctx::new(dir.path().to_path_buf()).for_task(
-            Some(events),
-            Default::default(),
-            None,
-            None,
-        );
+        let ctx = Ctx::new(dir.path().to_path_buf()).for_task(Some(events), Default::default());
         let scout = Scout::new(Box::new(Scripted(Mutex::new(vec![
             Reply {
                 tool_calls: vec![ToolCall {
@@ -284,12 +269,7 @@ mod tests {
         std::fs::create_dir(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/view.rs"), "fn draw() {}\n").unwrap();
         let (events, _rx) = mpsc::channel(64);
-        let ctx = Ctx::new(dir.path().to_path_buf()).for_task(
-            Some(events),
-            Default::default(),
-            None,
-            None,
-        );
+        let ctx = Ctx::new(dir.path().to_path_buf()).for_task(Some(events), Default::default());
         let scout = Scout::new(Box::new(Scripted(Mutex::new(vec![
             Reply {
                 content: "`src/model/edits.rs:3` holds EditLine.".into(),

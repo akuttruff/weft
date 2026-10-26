@@ -64,6 +64,55 @@ pub struct Worker<'a> {
     pub window: u32,
 }
 
+impl<'a> Worker<'a> {
+    /// A worker with the usual settings: the task's stop signal from `ctx`, no
+    /// approvals yet, the worker's role, the usual rounds and window.
+    pub fn new(
+        model: &'a dyn Model,
+        registry: &'a Registry,
+        ctx: &'a Ctx,
+        approver: &'a dyn Approver,
+        events: Events,
+    ) -> Self {
+        Self {
+            model,
+            registry,
+            ctx,
+            approver,
+            events,
+            cancel: ctx.cancel.clone(),
+            allowed: HashSet::new(),
+            role: Role::Worker,
+            max_rounds: MAX_ROUNDS,
+            window: crate::config::DEFAULT_WINDOW,
+        }
+    }
+
+    // Rust: setters that take `self` by value and give it back let the caller
+    // chain them: `Worker::new(..).role(Role::Scout).rounds(8)`.
+    pub fn role(mut self, role: Role) -> Self {
+        self.role = role;
+        self
+    }
+
+    pub fn rounds(mut self, max_rounds: usize) -> Self {
+        self.max_rounds = max_rounds;
+        self
+    }
+
+    /// The context window in tokens; 0 switches the in-task guard off.
+    pub fn window(mut self, window: u32) -> Self {
+        self.window = window;
+        self
+    }
+
+    /// Tools already approved for the session.
+    pub fn allowed(mut self, allowed: HashSet<String>) -> Self {
+        self.allowed = allowed;
+        self
+    }
+}
+
 impl Worker<'_> {
     /// Run until the model answers without calling a tool. `messages` is the
     /// conversation so far and is extended in place, so a follow-up can continue it.
@@ -314,18 +363,7 @@ mod tests {
             seen: Mutex::new(vec![]),
         };
         let (events, mut rx) = mpsc::channel(64);
-        let mut worker = Worker {
-            model: &model,
-            registry: &registry,
-            ctx: &ctx,
-            approver: &Yes,
-            events,
-            cancel: CancellationToken::new(),
-            allowed: HashSet::new(),
-            role: Role::Worker,
-            max_rounds: MAX_ROUNDS,
-            window: 0,
-        };
+        let mut worker = Worker::new(&model, &registry, &ctx, &Yes, events).window(0);
         let mut messages = vec![
             Message::System("sys".into()),
             Message::User("change it".into()),
@@ -408,18 +446,7 @@ mod tests {
             seen: Mutex::new(vec![]),
         };
         let (events, _rx) = mpsc::channel(64);
-        let mut worker = Worker {
-            model: &model,
-            registry: &registry,
-            ctx: &ctx,
-            approver: &Never,
-            events,
-            cancel: CancellationToken::new(),
-            allowed: HashSet::new(),
-            role: Role::Worker,
-            max_rounds: MAX_ROUNDS,
-            window: 0,
-        };
+        let mut worker = Worker::new(&model, &registry, &ctx, &Never, events).window(0);
         let mut messages = vec![Message::User("run it".into())];
         worker.run(&mut messages).await.unwrap();
         assert!(
@@ -448,18 +475,7 @@ mod tests {
             seen: Mutex::new(vec![]),
         };
         let (events, mut rx) = mpsc::channel(64);
-        let mut worker = Worker {
-            model: &model,
-            registry: &registry,
-            ctx: &ctx,
-            approver: &Yes,
-            events,
-            cancel: CancellationToken::new(),
-            allowed: HashSet::new(),
-            role: Role::Worker,
-            max_rounds: MAX_ROUNDS,
-            window: 30_000,
-        };
+        let mut worker = Worker::new(&model, &registry, &ctx, &Yes, events).window(30_000);
         let mut messages = vec![
             Message::System("sys".into()),
             Message::User("t".into()),

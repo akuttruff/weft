@@ -56,22 +56,26 @@ impl Ctx {
         }
     }
 
-    /// The same folder, tied to one task's stop signal, event stream,
-    /// checkpoint and approver.
-    pub fn for_task(
-        &self,
-        events: Option<Events>,
-        cancel: CancellationToken,
-        checkpoint: Option<Arc<Checkpoint>>,
-        approver: Option<Arc<dyn Approver>>,
-    ) -> Self {
+    /// The same folder, tied to one task's stop signal and event stream.
+    /// `with_checkpoint` and `with_approver` add the rest.
+    pub fn for_task(&self, events: Option<Events>, cancel: CancellationToken) -> Self {
         Self {
             root: self.root.clone(),
             cancel,
             events,
-            checkpoint,
-            approver,
+            checkpoint: None,
+            approver: None,
         }
+    }
+
+    pub fn with_checkpoint(mut self, checkpoint: Option<Arc<Checkpoint>>) -> Self {
+        self.checkpoint = checkpoint;
+        self
+    }
+
+    pub fn with_approver(mut self, approver: Arc<dyn Approver>) -> Self {
+        self.approver = Some(approver);
+        self
     }
 }
 

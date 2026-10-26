@@ -397,12 +397,11 @@ impl Session {
         });
         // The tools learn this task's stop signal, event stream and checkpoint.
         let checkpoint = self.checkpoint_dir().map(|d| Arc::new(Checkpoint::new(d)));
-        let ctx = self.ctx.for_task(
-            Some(inner.clone()),
-            cancel.clone(),
-            checkpoint.clone(),
-            Some(approver.clone()),
-        );
+        let ctx = self
+            .ctx
+            .for_task(Some(inner.clone()), cancel.clone())
+            .with_checkpoint(checkpoint.clone())
+            .with_approver(approver.clone());
         let mut tandem = Tandem {
             planner: &self.planner,
             reviewer: &self.reviewer,
@@ -500,9 +499,7 @@ impl Session {
         before: u32,
     ) -> Result<Compacted, WorkerError> {
         let mut messages = std::mem::take(&mut *self.messages.lock().unwrap());
-        let ctx = self
-            .ctx
-            .for_task(Some(events.clone()), cancel.clone(), None, None);
+        let ctx = self.ctx.for_task(Some(events.clone()), cancel.clone());
         let result = self.fold(&ctx, events, cancel, &mut messages, before).await;
         *self.messages.lock().unwrap() = messages;
         result

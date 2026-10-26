@@ -3,7 +3,6 @@
 //! the screen and ask for approval as usual; only its report comes back to
 //! the worker that asked, so the files it read never land in that context.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -12,8 +11,7 @@ use tokio::sync::mpsc;
 
 use super::tandem::snapshot;
 use super::worker::{Worker, WorkerError};
-use super::{AgentEvent, Approver, Model, Role, Yes, prompts};
-use crate::config::DEFAULT_WINDOW;
+use super::{AgentEvent, Approver, Model, Yes, prompts};
 use crate::lm::{Message, ToolSpec};
 use crate::tools::{Ctx, Registry, Tool, ToolError, arg_str};
 
@@ -72,18 +70,14 @@ impl Tool for Delegate {
             }
         });
 
-        let mut worker = Worker {
-            model: self.model.as_ref(),
-            registry: &self.registry,
+        let mut worker = Worker::new(
+            self.model.as_ref(),
+            &self.registry,
             ctx,
-            approver: approver.as_ref(),
+            approver.as_ref(),
             events,
-            cancel: ctx.cancel.clone(),
-            allowed: HashSet::new(),
-            role: Role::Worker,
-            max_rounds: DELEGATE_ROUNDS,
-            window: DEFAULT_WINDOW,
-        };
+        )
+        .rounds(DELEGATE_ROUNDS);
         let mut convo = vec![
             Message::System(prompts::WORKER.into()),
             Message::User(format!(
@@ -150,12 +144,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
         let (events, mut rx) = mpsc::channel(64);
-        let ctx = Ctx::new(dir.path().to_path_buf()).for_task(
-            Some(events),
-            Default::default(),
-            None,
-            None,
-        );
+        let ctx = Ctx::new(dir.path().to_path_buf()).for_task(Some(events), Default::default());
         let model = Scripted(Mutex::new(vec![
             Reply {
                 tool_calls: vec![ToolCall {

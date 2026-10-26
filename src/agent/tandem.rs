@@ -7,7 +7,7 @@ use std::path::Path;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::worker::{MAX_ROUNDS, Outcome, Worker, WorkerError};
+use super::worker::{Outcome, Worker, WorkerError};
 use super::{AgentEvent, Approver, Events, Model, PlanDecision, Role, Yes, prompts};
 use crate::config::{Confirm, PlanWhen};
 use crate::lm::{Message, Usage};
@@ -234,18 +234,10 @@ impl Tandem<'_> {
                 // A quick, silent word from the worker: its events go nowhere.
                 let (quiet, _keep) = mpsc::channel(8);
                 let empty = Registry::empty();
-                let mut triage = Worker {
-                    model: self.worker,
-                    registry: &empty,
-                    ctx: self.ctx,
-                    approver: &Yes,
-                    events: quiet,
-                    cancel: self.cancel.clone(),
-                    allowed: HashSet::new(),
-                    role: Role::Worker,
-                    max_rounds: 1,
-                    window: self.window,
-                };
+                let mut triage = Worker::new(self.worker, &empty, self.ctx, &Yes, quiet)
+                    .rounds(1)
+                    .window(self.window);
+                triage.cancel = self.cancel.clone();
                 let mut convo = vec![
                     Message::System(prompts::TRIAGE.into()),
                     Message::User(with_earlier(task, earlier)),
@@ -262,18 +254,16 @@ impl Tandem<'_> {
         model: &dyn Model,
         messages: &mut Vec<Message>,
     ) -> Result<Outcome, WorkerError> {
-        let mut worker = Worker {
+        let mut worker = Worker::new(
             model,
-            registry: self.registry,
-            ctx: self.ctx,
-            approver: self.approver,
-            events: self.events.clone(),
-            cancel: self.cancel.clone(),
-            allowed: std::mem::take(&mut self.allowed),
-            role: Role::Worker,
-            max_rounds: MAX_ROUNDS,
-            window: self.window,
-        };
+            self.registry,
+            self.ctx,
+            self.approver,
+            self.events.clone(),
+        )
+        .allowed(std::mem::take(&mut self.allowed))
+        .window(self.window);
+        worker.cancel = self.cancel.clone();
         let result = worker.run(messages).await;
         self.allowed = std::mem::take(&mut worker.allowed);
         result
@@ -287,18 +277,12 @@ impl Tandem<'_> {
         role: Role,
         max_rounds: usize,
     ) -> Worker<'r> {
-        Worker {
-            model,
-            registry,
-            ctx: self.ctx,
-            approver: &Yes,
-            events: self.events.clone(),
-            cancel: self.cancel.clone(),
-            allowed: HashSet::new(),
-            role,
-            max_rounds,
-            window: self.window,
-        }
+        let mut looker = Worker::new(model, registry, self.ctx, &Yes, self.events.clone())
+            .role(role)
+            .rounds(max_rounds)
+            .window(self.window);
+        looker.cancel = self.cancel.clone();
+        looker
     }
 
     async fn phase(&self, name: &str) {
