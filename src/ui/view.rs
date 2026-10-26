@@ -60,7 +60,7 @@ pub fn session_lines(sessions: &[Saved]) -> Vec<Line<'static>> {
         )));
     }
     lines.push(Line::from(Span::styled(
-        "  /resume <number or id> picks one up",
+        "  type a number to pick one up, or /resume <number or id>",
         Style::new().dim(),
     )));
     lines

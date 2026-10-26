@@ -227,6 +227,8 @@ struct App {
     nested: usize,
     /// The last `/resume` listing, so `/resume 2` means something.
     sessions: Vec<Saved>,
+    /// The listing was the last thing shown, so a bare number picks from it.
+    picking_session: bool,
 }
 
 /// How the screen was left: for good, or to be started again on the same
@@ -366,6 +368,7 @@ impl App {
             calls: std::collections::HashMap::new(),
             nested: 0,
             sessions: Vec::new(),
+            picking_session: false,
         }
     }
 

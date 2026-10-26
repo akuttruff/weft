@@ -16,6 +16,13 @@ impl App {
         if self.history.last() != Some(&line) {
             self.history.push(line.clone());
         }
+        // Right after a `/resume` listing, a bare number is a pick, not a task.
+        let line = if self.picking_session && line.parse::<usize>().is_ok() {
+            format!("/resume {line}")
+        } else {
+            line
+        };
+        self.picking_session = false;
         let (command, rest) = match line.split_once(char::is_whitespace) {
             Some((c, r)) if c.starts_with('/') => (c, r.trim().to_string()),
             _ => (line.as_str(), String::new()),
@@ -68,6 +75,7 @@ impl App {
                         self.sessions = all.into_iter().filter(|s| Some(&s.id) != me.as_ref()).collect();
                         let lines = view::session_lines(&self.sessions);
                         self.push(lines);
+                        self.picking_session = !self.sessions.is_empty();
                     }
                     Err(e) => self.push(view::error_line(&format!("  {e:#}"))),
                 }

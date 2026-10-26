@@ -144,6 +144,36 @@ fn accept_toggles_and_shows_in_the_footer() {
 }
 
 #[test]
+fn a_bare_number_after_the_resume_listing_is_a_pick() {
+    let (mut app, tx, _rx) = app();
+    // Nothing to list yet: a number is still a task, and nothing is picked.
+    type_text(&mut app, &tx, "/resume");
+    key(&mut app, &tx, KeyCode::Enter);
+    assert!(!app.picking_session);
+    // With a listing up, "1" means the first session; an unknown number says so.
+    app.sessions = vec![Saved {
+        id: "20261025-120000".into(),
+        ..Default::default()
+    }];
+    app.picking_session = true;
+    type_text(&mut app, &tx, "3");
+    key(&mut app, &tx, KeyCode::Enter);
+    assert!(
+        pending(&app).contains("no session 3 in the list"),
+        "{}",
+        pending(&app)
+    );
+    assert!(
+        app.running.is_none(),
+        "it was not sent to the models as a task"
+    );
+    assert!(
+        !app.picking_session,
+        "the listing is spent after one answer"
+    );
+}
+
+#[test]
 fn shift_tab_cycles_the_permission_mode() {
     let (mut app, tx, _rx) = app();
     assert_eq!(app.mode, Permission::Ask);
