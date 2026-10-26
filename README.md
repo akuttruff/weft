@@ -35,20 +35,37 @@ shell commands ask first, and one key answers:
 
 ![Weft asking before an edit](docs/approval.png)
 
-Keys: enter sends · shift-tab cycles how much weft asks (ask → edits auto →
-all auto → plan first) · ctrl-j (or `\` + enter) for a newline · the input
-box takes the Emacs-style editing keys Readline gives your shell · ↑↓ history
-· esc
-stops the task · y / a / n answer approvals · ctrl-c twice leaves. `/` opens a
-menu: `/plan <task>` plans first and waits for your word on the plan, `/go
-<task>` never plans, `/think`
-toggles the worker's thinking, `/clear` starts a fresh conversation,
-`/resume` lists this folder's earlier sessions and `/resume 2` picks one up,
-`/compact` folds the earlier tasks into a note now, `/undo` puts back the last
-task's files, `/accept` lets edits and new files through without asking for
-the rest of the session (shell commands still ask; shift-tab reaches the same
-mode and the others), `/cost` shows the tokens
-used, `/mcp` lists the MCP servers and their tools, `/help`, `/quit`.
+**Keys**
+
+| Key | Does |
+|---|---|
+| enter | sends the task |
+| shift-tab | cycles how much weft asks: ask → edits auto → all auto → plan first |
+| ctrl-j, or `\` + enter | a newline |
+| ↑ ↓ | history |
+| esc | stops the task |
+| y / a / n | answers an approval: once, always this session, no |
+| ctrl-c twice | leaves |
+
+The input box takes the Emacs-style editing keys Readline gives your shell.
+
+**Commands** (`/` opens the menu)
+
+| Command | Does |
+|---|---|
+| `/plan <task>` | plans first and waits for your word on the plan |
+| `/go <task>` | straight to work, no plan |
+| `/accept` | edits and new files stop asking for the session; shell commands still ask |
+| `/undo` | puts back the files the last task changed |
+| `/compact` | folds the earlier tasks into a note now |
+| `/clear` | starts a fresh conversation |
+| `/resume` | lists this folder's earlier sessions; a number, or `/resume 2`, picks one up |
+| `/restart` | leaves and comes straight back to this session, on the installed build |
+| `/think` | toggles the worker's thinking |
+| `/memory` | what weft has kept about this project |
+| `/cost` | tokens used this session |
+| `/mcp` | the MCP servers and their tools |
+| `/help`, `/quit` | |
 
 ## How a task flows
 
