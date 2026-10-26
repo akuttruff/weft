@@ -78,17 +78,24 @@ impl App {
             }
             AgentEvent::Text { .. } => {}
             AgentEvent::ToolStart {
+                id,
                 summary,
                 name,
                 args,
-                ..
             } => {
-                self.last_tool = (name, args);
                 self.flush_text();
                 self.push(view::tool_line(&summary));
+                if name == "delegate" {
+                    self.nested += 1;
+                }
+                self.calls.insert(id, (name, args));
             }
-            AgentEvent::ToolDone { ok, output, .. } => {
-                let (tool, args) = &self.last_tool;
+            AgentEvent::ToolDone { id, ok, output } => {
+                let (tool, args) = self.calls.remove(&id).unwrap_or_default();
+                if tool == "delegate" {
+                    self.nested = self.nested.saturating_sub(1);
+                }
+                let (tool, args) = (&tool, &args);
                 let line = view::result_line(ok, &output, tool);
                 // An edit or a new file is shown as the code it changed.
                 let shown = if ok {

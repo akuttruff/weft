@@ -169,9 +169,12 @@ struct App {
     context: u32,
     tasks: usize,
     flush_failed: bool,
-    /// The tool call whose result is next: its name for the summary line, its
-    /// arguments for the diff under an edit.
-    last_tool: (String, serde_json::Value),
+    /// Tool calls under way, by id: the name for the result line, the
+    /// arguments for the diff under an edit. A helper's calls interleave with
+    /// the `delegate` call that started it, so one "last call" is not enough.
+    calls: std::collections::HashMap<String, (String, serde_json::Value)>,
+    /// How many helpers are at work; their lines are indented under the Delegate line.
+    nested: usize,
     /// The last `/resume` listing, so `/resume 2` means something.
     sessions: Vec<Saved>,
 }
@@ -294,7 +297,8 @@ impl App {
             context: 0,
             tasks: 0,
             flush_failed: false,
-            last_tool: (String::new(), serde_json::Value::Null),
+            calls: std::collections::HashMap::new(),
+            nested: 0,
             sessions: Vec::new(),
         }
     }
@@ -307,9 +311,26 @@ impl App {
 
     /// Lines whose wrapped continuations should start with `cont` (a gutter, an indent).
     fn push_with(&mut self, lines: Vec<Line<'static>>, cont: Vec<Span<'static>>) {
-        if !lines.is_empty() {
-            self.out.push((lines, cont));
+        if lines.is_empty() {
+            return;
         }
+        if self.nested == 0 {
+            self.out.push((lines, cont));
+            return;
+        }
+        // Inside a helper's run, everything sits two columns further in.
+        let pad = "  ".repeat(self.nested);
+        let lines = lines
+            .into_iter()
+            .map(|l| {
+                let mut spans = vec![Span::raw(pad.clone())];
+                spans.extend(l.spans);
+                Line::from(spans)
+            })
+            .collect();
+        let mut indented = vec![Span::raw(pad)];
+        indented.extend(cont);
+        self.out.push((lines, indented));
     }
 
     /// Write the waiting lines above the live area, wrapped to the terminal's width.

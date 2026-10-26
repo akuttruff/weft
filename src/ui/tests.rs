@@ -143,3 +143,47 @@ fn ctrl_c_twice_leaves_and_once_clears_the_input() {
     app.on_key(ctrl_c, &tx);
     assert!(app.quit);
 }
+
+#[test]
+fn a_helpers_lines_sit_under_the_delegate_line() {
+    use serde_json::json;
+    let (mut app, _tx, _rx) = app();
+    let start = |id: &str, name: &str, summary: &str| {
+        UiMsg::Agent(AgentEvent::ToolStart {
+            id: id.into(),
+            name: name.into(),
+            summary: summary.into(),
+            args: json!({}),
+        })
+    };
+    let done = |id: &str, output: &str| {
+        UiMsg::Agent(AgentEvent::ToolDone {
+            id: id.into(),
+            ok: true,
+            output: output.into(),
+        })
+    };
+    app.on_msg(start("d1", "delegate", "Delegate write the tests"));
+    app.on_msg(start("r1", "read_file", "Read a.rs"));
+    app.on_msg(done("r1", "1\tfn main() {}"));
+    app.on_msg(done("d1", "Wrote the tests."));
+    app.on_msg(start("b1", "bash", "Bash npx vitest run"));
+    let text = pending(&app);
+    assert!(text.starts_with("⏺ Delegate write the tests"), "{text}");
+    assert!(
+        text.contains("\n  ⏺ Read a.rs"),
+        "the helper's call is indented: {text}"
+    );
+    assert!(
+        text.contains("\n    ⎿ Read 1 line"),
+        "and so is its result: {text}"
+    );
+    assert!(
+        text.contains("\n  ⎿ Wrote the tests."),
+        "the delegate's own result is not: {text}"
+    );
+    assert!(
+        text.contains("\n⏺ Bash npx vitest run"),
+        "back at the margin after: {text}"
+    );
+}

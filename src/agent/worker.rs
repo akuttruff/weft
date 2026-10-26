@@ -241,13 +241,19 @@ impl Worker<'_> {
     }
 
     async fn run_tool(&mut self, call: &crate::lm::ToolCall) -> Result<String, ToolError> {
+        // `always` answers live in two places: this worker's own set, and the
+        // task's shared set, which a helper's worker reads and writes too, so
+        // an approval given to either holds for both.
+        let shared = |name: &str| self.ctx.allowed.lock().unwrap().contains(name);
         if let Some(what) = self.registry.approval(call)
             && !self.allowed.contains(&call.name)
+            && !shared(&call.name)
         {
             match self.approver.ask(&what).await {
                 Decision::Once => {}
                 Decision::Always => {
                     self.allowed.insert(call.name.clone());
+                    self.ctx.allowed.lock().unwrap().insert(call.name.clone());
                 }
                 Decision::No => return Err(ToolError::Refused("the user said no".into())),
             }
@@ -506,5 +512,47 @@ mod tests {
             }
         }
         assert_eq!(trimmed, 1);
+    }
+    #[tokio::test]
+    async fn an_approval_shared_through_the_context_is_not_asked_again() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        let registry = Registry::builtin();
+        let ctx = Ctx::new(dir.path().to_path_buf());
+        ctx.allowed.lock().unwrap().insert("edit_file".into());
+        let model = Scripted {
+            replies: Mutex::new(vec![
+                Reply {
+                    tool_calls: vec![call(
+                        "c1",
+                        "edit_file",
+                        json!({"path": "a.txt", "old_string": "hello", "new_string": "bye"}),
+                    )],
+                    ..Default::default()
+                },
+                Reply {
+                    content: "Done.".into(),
+                    ..Default::default()
+                },
+            ]),
+            seen: Mutex::new(vec![]),
+        };
+        struct Refuses;
+        #[async_trait]
+        impl Approver for Refuses {
+            async fn ask(&self, _what: &str) -> Decision {
+                Decision::No
+            }
+        }
+        let (events, _rx) = mpsc::channel(64);
+        // The approver would refuse if asked; it is not asked.
+        let mut worker = Worker::new(&model, &registry, &ctx, &Refuses, events).window(0);
+        let mut messages = vec![Message::User("change it".into())];
+        let out = worker.run(&mut messages).await.unwrap();
+        assert_eq!(out.answer, "Done.");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "bye\n"
+        );
     }
 }
