@@ -7,6 +7,7 @@ use std::path::Path;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use super::convo::{exchanges, task_message};
 use super::worker::{Outcome, Worker, WorkerError};
 use super::{AgentEvent, Approver, Events, Model, PlanDecision, Role, Yes, prompts};
 use crate::config::{Confirm, PlanWhen};
@@ -161,13 +162,7 @@ impl Tandem<'_> {
         } else {
             self.lead.clone()
         };
-        // With a note above it, the task gets a heading so it can be found again.
-        let head = if lead.is_empty() { "" } else { "## Task\n" };
-        let ask = match &plan {
-            Some(p) => format!("{lead}{head}{task}\n\n{}\n\n{p}", prompts::WORKER_WITH_PLAN),
-            None => format!("{lead}{head}{task}"),
-        };
-        messages.push(Message::User(ask));
+        messages.push(Message::User(task_message(&lead, task, plan.as_deref())));
         let done = self.work(self.worker, messages).await?;
         out.take(&done);
 
@@ -328,48 +323,6 @@ pub fn verdict(text: &str) -> (bool, String) {
     }
     let rest = rest.join("\n").trim().to_string();
     (approved, rest)
-}
-
-/// The tasks of a conversation and the answers they got, in order.
-pub fn exchanges(messages: &[Message]) -> Vec<(String, String)> {
-    let mut pairs: Vec<(String, String)> = Vec::new();
-    let mut task: Option<String> = None;
-    for m in messages {
-        match m {
-            Message::User(s) => {
-                if let Some(t) = task_of(s) {
-                    task = Some(t);
-                }
-            }
-            Message::Assistant {
-                content,
-                tool_calls,
-                ..
-            } if tool_calls.is_empty() => {
-                if let Some(t) = task.take() {
-                    pairs.push((t, content.trim().to_string()));
-                }
-            }
-            _ => {}
-        }
-    }
-    pairs
-}
-
-/// The task in one of the worker's user messages, or `None` for a message
-/// that is not a task: a fix request (part of the task before it) or a note
-/// such as the project snapshot or a summary, which open with `## `.
-pub(crate) fn task_of(s: &str) -> Option<String> {
-    if s.starts_with(prompts::WORKER_FIX) {
-        return None;
-    }
-    let body = match s.split_once("## Task\n") {
-        Some((_, after)) => after,
-        None if s.starts_with("## ") => return None,
-        None => s,
-    };
-    // The plan was appended after a blank line; the task is what came before it.
-    Some(body.split("\n\n").next().unwrap_or(body).trim().to_string())
 }
 
 /// The last few tasks and answers of this session, for the models that do not

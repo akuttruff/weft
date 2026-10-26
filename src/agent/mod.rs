@@ -2,6 +2,7 @@
 //! whatever is drawing the screen.
 
 pub mod compact;
+pub mod convo;
 pub mod delegate;
 pub mod prompts;
 pub mod scout;

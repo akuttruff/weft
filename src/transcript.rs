@@ -245,7 +245,7 @@ impl Saved {
 
     /// The tasks and the answers they got, from the conversation as it stands.
     pub fn exchanges(&self) -> Vec<(String, String)> {
-        crate::agent::tandem::exchanges(&self.messages)
+        crate::agent::convo::exchanges(&self.messages)
     }
 }
 

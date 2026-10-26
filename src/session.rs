@@ -12,20 +12,19 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::compact::{self, Compacted};
 use crate::agent::delegate::Delegate;
-use crate::agent::scout::Scout;
 use crate::agent::tandem::{Mode, Tandem, TandemOutcome, snapshot};
 use crate::agent::worker::WorkerError;
 use crate::agent::{AgentEvent, Approver, Events, Model, Role, prompts};
 use crate::checkpoint::Checkpoint;
 use crate::config::{Config, Confirm, PlanWhen};
 use crate::hooks::{self, Hooks, On};
+use crate::lm::Message;
 use crate::lm::chat::ChatModel;
 use crate::lm::raw::RawModel;
-use crate::lm::{Endpoint, Message};
 use crate::mcp;
-use crate::tools::image::SeeImage;
-use crate::tools::memory::{self, Remember};
-use crate::tools::{Ctx, Registry, Rules, Tool};
+use crate::models::Models;
+use crate::tools::memory;
+use crate::tools::{Ctx, Registry, Rules};
 use crate::transcript::{self, Record, Saved, Transcript};
 
 pub struct Session {
@@ -37,19 +36,13 @@ pub struct Session {
     pub registry: Registry,
     /// The planner's: read-only built-ins and the scout.
     pub planner_registry: Registry,
-    scout_model: String,
-    /// The scout's model once more, for writing the compaction note.
-    digest: Box<dyn Model>,
+    /// Which model plays which role; also builds the tools that need one.
+    pub models: Models,
     /// Compact once the worker's context reaches this; 0 never.
     pub compact_at: u32,
     /// The config's hooks; the registry runs the edit and shell ones, the session the task ones.
     hooks: Hooks,
     rules: Rules,
-    /// How to build the scout's model again, for the helpers' own tool set.
-    scout_endpoint: Endpoint,
-    scout_effort: Option<crate::lm::Effort>,
-    vision_endpoint: Endpoint,
-    vision_effort: crate::lm::Effort,
     /// The worker's context window, in tokens.
     pub window: u32,
     pub ctx: Ctx,
@@ -82,70 +75,27 @@ pub struct Session {
 
 impl Session {
     pub fn new(config: &Config, root: PathBuf) -> Self {
-        let endpoint = |model: &str| Endpoint {
-            url: config.lm_studio.url.clone(),
-            api_token: config.lm_studio.api_token.clone(),
-            model: model.to_string(),
-        };
-        // The scout runs on the worker's model by default: the fast one, on the
-        // raw route with thinking off. A dense model at low effort took close to
-        // three minutes on one question. Another model takes the raw route too
-        // unless the config gives it an effort, which only the chat route carries.
-        let scout_model = config
-            .scout
-            .model
-            .clone()
-            .unwrap_or_else(|| config.worker.model.clone());
-        let helper = || -> Box<dyn Model> {
-            match config.scout.effort {
-                Some(effort) => Box::new(ChatModel::new(endpoint(&scout_model), Some(effort))),
-                None => Box::new(RawModel::new(endpoint(&scout_model), false)),
-            }
-        };
-        let vision_model = config
-            .vision
-            .model
-            .clone()
-            .unwrap_or_else(|| config.planner.model.clone());
-        // The extra tools, built afresh for each registry so the planner's and
-        // the worker's tool sets are independent.
-        let extras = || {
-            extra_tools(
-                helper(),
-                endpoint(&vision_model),
-                config.vision.effort,
-                memory::file_for(&root),
-            )
-        };
+        let models = Models::from(config);
+        // The extra tools are built afresh for each registry, so the planner's
+        // and the worker's tool sets are independent.
         let mut registry = Registry::builtin()
             .with_rules(config.approve.clone())
             .with_hooks(config.hooks.clone());
-        registry.extend(extras());
+        registry.extend(models.extra_tools(&root));
         let mut planner_registry = Registry::read_only();
-        planner_registry.extend(extras());
+        planner_registry.extend(models.extra_tools(&root));
         Self {
-            planner: ChatModel::new(
-                endpoint(&config.planner.model),
-                Some(config.planner.plan_effort),
-            ),
-            reviewer: ChatModel::new(
-                endpoint(&config.planner.model),
-                Some(config.planner.review_effort),
-            ),
-            worker: RawModel::new(endpoint(&config.worker.model), false),
-            worker_thinking: RawModel::new(endpoint(&config.worker.model), true),
+            planner: models.planner(),
+            reviewer: models.reviewer(),
+            worker: models.worker(false),
+            worker_thinking: models.worker(true),
             registry,
             planner_registry,
-            digest: helper(),
+            models,
             compact_at: config.compact.at,
             hooks: Hooks(config.hooks.clone()),
             rules: config.approve.clone(),
-            scout_endpoint: endpoint(&scout_model),
-            scout_effort: config.scout.effort,
-            vision_endpoint: endpoint(&vision_model),
-            vision_effort: config.vision.effort,
             window: config.compact.window,
-            scout_model,
             ctx: Ctx::new(root),
             when: config.planner.when,
             review_rounds: config.planner.review_rounds,
@@ -227,7 +177,7 @@ impl Session {
                 started: transcript::now(),
                 planner: self.planner_name().to_string(),
                 worker: self.worker_name().to_string(),
-                scout: self.scout_model.clone(),
+                scout: self.models.scout.clone(),
             },
         )?;
         let id = t.id.clone();
@@ -275,7 +225,7 @@ impl Session {
         let mut helpers = Registry::builtin()
             .with_rules(self.rules.clone())
             .with_hooks(self.hooks.0.clone());
-        helpers.extend(self.extras());
+        helpers.extend(self.models.extra_tools(&self.ctx.root));
         for (status, server) in connected {
             self.mcp.push(status);
             if let Some(server) = server {
@@ -284,37 +234,10 @@ impl Session {
                 self.servers.push(server);
             }
         }
-        let worker = RawModel::new(
-            Endpoint {
-                url: self.worker.endpoint.url.clone(),
-                api_token: self.worker.endpoint.api_token.clone(),
-                model: self.worker.endpoint.model.clone(),
-            },
-            false,
-        );
         self.registry.extend(vec![Box::new(Delegate::new(
-            Box::new(worker),
+            Box::new(self.models.worker(false)),
             Arc::new(helpers),
         ))]);
-    }
-
-    /// The scout, `see_image` and `remember`, on the configured models.
-    fn extras(&self) -> Vec<Box<dyn Tool>> {
-        let copy = |e: &Endpoint| Endpoint {
-            url: e.url.clone(),
-            api_token: e.api_token.clone(),
-            model: e.model.clone(),
-        };
-        let scout_model: Box<dyn Model> = match self.scout_effort {
-            Some(effort) => Box::new(ChatModel::new(copy(&self.scout_endpoint), Some(effort))),
-            None => Box::new(RawModel::new(copy(&self.scout_endpoint), false)),
-        };
-        extra_tools(
-            scout_model,
-            copy(&self.vision_endpoint),
-            self.vision_effort,
-            memory::file_for(&self.ctx.root),
-        )
     }
 
     /// Where `remember` writes, for `/memory`.
@@ -331,7 +254,7 @@ impl Session {
     }
 
     pub fn scout_name(&self) -> &str {
-        &self.scout_model
+        &self.models.scout
     }
 
     /// Run one task through the tandem. The conversation is taken out for the
@@ -513,8 +436,15 @@ impl Session {
         messages: &mut Vec<Message>,
         before: u32,
     ) -> Result<Compacted, WorkerError> {
-        let done =
-            compact::compact(self.digest.as_ref(), ctx, events, cancel, messages, before).await?;
+        let done = compact::compact(
+            self.models.scout().as_ref(),
+            ctx,
+            events,
+            cancel,
+            messages,
+            before,
+        )
+        .await?;
         self.record(Record::Replace {
             at: transcript::now(),
             note: format!(
@@ -555,26 +485,6 @@ impl Session {
     pub fn depth(&self) -> usize {
         self.messages.lock().unwrap().len().saturating_sub(1)
     }
-}
-
-/// The tools beyond the built-in six: the scout, a look at images, and memory.
-fn extra_tools(
-    scout_model: Box<dyn Model>,
-    vision: Endpoint,
-    vision_effort: crate::lm::Effort,
-    memory_file: Option<std::path::PathBuf>,
-) -> Vec<Box<dyn Tool>> {
-    let mut out: Vec<Box<dyn Tool>> = vec![
-        Box::new(Scout::new(scout_model)),
-        Box::new(SeeImage {
-            endpoint: vision,
-            effort: Some(vision_effort),
-        }),
-    ];
-    if let Some(file) = memory_file {
-        out.push(Box::new(Remember { file }));
-    }
-    out
 }
 
 /// `2026-10-25T14:19:01-07:00` → `on 2026-10-25 at 14:19`.

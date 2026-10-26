@@ -6,7 +6,7 @@
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::tandem::task_of;
+use super::convo::task_of;
 use super::worker::{Worker, WorkerError};
 use super::{AgentEvent, Model, Role, Yes, prompts};
 use crate::lm::Message;
@@ -318,7 +318,7 @@ mod tests {
         assert_eq!(messages[3], user("second"));
         // The note is not a task, so the earlier-tasks digest skips it.
         assert_eq!(
-            crate::agent::tandem::exchanges(&messages[1..]),
+            crate::agent::convo::exchanges(&messages[1..]),
             [("second".to_string(), "done two".to_string())]
         );
     }

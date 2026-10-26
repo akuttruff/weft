@@ -11,6 +11,7 @@ pub mod config;
 pub mod hooks;
 pub mod lm;
 pub mod mcp;
+pub mod models;
 pub mod session;
 pub mod tools;
 pub mod transcript;
