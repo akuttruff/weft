@@ -23,9 +23,12 @@ impl App {
             line
         };
         self.picking_session = false;
-        let (command, rest) = match line.split_once(char::is_whitespace) {
-            Some((c, r)) if c.starts_with('/') => (c, r.trim().to_string()),
-            _ => (line.as_str(), String::new()),
+        // A file dropped on the terminal arrives as its path, spaces escaped
+        // the shell's way; the worker wants the plain path.
+        let line = unescape_dropped(&line);
+        let (command, rest) = match command_of(&line) {
+            Some((c, r)) => (c, r.to_string()),
+            None => ("", String::new()),
         };
         match command {
             "/quit" | "/exit" | "/q" => self.quit = true,
@@ -163,7 +166,7 @@ impl App {
             }
             "/plan" => self.start(rest, Mode::Plan, tx),
             "/go" => self.start(rest, Mode::Go, tx),
-            c if c.starts_with('/') => {
+            c if !c.is_empty() => {
                 // A custom command: the file is the task, shown as what was typed.
                 let custom = commands::load(&self.session.ctx.root)
                     .into_iter()
@@ -319,5 +322,30 @@ impl App {
             let _ = forward.await;
             let _ = tx.send(UiMsg::Done(result)).await;
         });
+    }
+}
+
+/// The slash command a line starts with, and the rest of the line: `/name`
+/// where the name is a word. A line that starts with a path (`/Users/…`, as
+/// a file dropped on the terminal does) is a task, not a command.
+pub(super) fn command_of(line: &str) -> Option<(&str, &str)> {
+    let (head, rest) = match line.split_once(char::is_whitespace) {
+        Some((h, r)) => (h, r.trim()),
+        None => (line, ""),
+    };
+    let name = head.strip_prefix('/')?;
+    let word = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    word.then_some((head, rest))
+}
+
+/// `Screenshot\ 2026-10-26\ at\ 12.09.09\ AM.png` → the path with its spaces.
+pub(super) fn unescape_dropped(line: &str) -> String {
+    if line.contains("\\ ") && line.contains('/') {
+        line.replace("\\ ", " ")
+    } else {
+        line.to_string()
     }
 }

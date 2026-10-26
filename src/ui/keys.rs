@@ -28,7 +28,7 @@ impl App {
                 (KeyCode::Enter, false, false) => {
                     let notes = self.input.trim().to_string();
                     // A slash command is a command, not notes for the planner.
-                    if notes.starts_with('/') {
+                    if slash::command_of(&notes).is_some() {
                         self.submit(tx);
                         return;
                     }
@@ -202,7 +202,7 @@ impl App {
     // ---- The slash menu ---------------------------------------------------------
 
     pub(super) fn menu_open(&self) -> bool {
-        self.input.starts_with('/')
+        slash::command_of(&self.input).is_some_and(|(_, rest)| rest.is_empty())
             && !self.input.contains(char::is_whitespace)
             && !self.menu_items().is_empty()
     }

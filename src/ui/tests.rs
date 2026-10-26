@@ -279,3 +279,24 @@ fn a_helpers_lines_sit_under_the_delegate_line() {
         "back at the margin after: {text}"
     );
 }
+
+#[test]
+fn a_dropped_file_path_is_a_task_not_a_command() {
+    assert_eq!(slash::command_of("/cost"), Some(("/cost", "")));
+    assert_eq!(
+        slash::command_of("/plan  fix it "),
+        Some(("/plan", "fix it"))
+    );
+    assert_eq!(slash::command_of("/my-cmd x"), Some(("/my-cmd", "x")));
+    assert_eq!(slash::command_of("/Users/a/Shot.png what is this"), None);
+    assert_eq!(slash::command_of("/var/folders/x/y.png"), None);
+    assert_eq!(slash::command_of("/"), None);
+    assert_eq!(
+        slash::unescape_dropped("/tmp/Screenshot\\ 2026-10-26\\ at\\ 12.09.09\\ AM.png why"),
+        "/tmp/Screenshot 2026-10-26 at 12.09.09 AM.png why"
+    );
+    // No menu pops up for a path, so typing one is not hijacked.
+    let (mut app, tx, _rx) = app();
+    type_text(&mut app, &tx, "/Users/a");
+    assert!(!app.menu_open());
+}
