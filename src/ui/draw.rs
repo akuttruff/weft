@@ -43,23 +43,24 @@ impl App {
                 Span::styled("What should weft do?", Style::new().dim()),
             ]))
         } else {
+            // Wrapped by cell count, the same way `cursor_at` counts, so the
+            // cursor lands where the text does. Word wrapping would leave a
+            // blank at the end of a row that the cursor math knows nothing of.
             let mut lines = Vec::new();
             for (i, l) in self.input.split('\n').enumerate() {
-                lines.push(Line::from(vec![
-                    Span::styled(if i == 0 { "> " } else { "  " }, Style::new().bold()),
-                    Span::raw(l.to_string()),
-                ]));
+                let prefix = if i == 0 { "> " } else { "  " };
+                for (j, chunk) in Input::rows(l, inner.width, 2).into_iter().enumerate() {
+                    lines.push(Line::from(vec![
+                        Span::styled(if j == 0 { prefix } else { "" }, Style::new().bold()),
+                        Span::raw(chunk),
+                    ]));
+                }
             }
             Text::from(lines)
         };
         let (row, col) = self.input.cursor_at(inner.width);
         let scroll = row.saturating_sub(inner.height.saturating_sub(1));
-        frame.render_widget(
-            Paragraph::new(shown)
-                .wrap(Wrap { trim: false })
-                .scroll((scroll, 0)),
-            inner,
-        );
+        frame.render_widget(Paragraph::new(shown).scroll((scroll, 0)), inner);
         frame.set_cursor_position((inner.x + col, inner.y + row - scroll));
 
         frame.render_widget(Paragraph::new(self.footer_line()), footer);

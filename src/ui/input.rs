@@ -160,6 +160,33 @@ impl Input {
         (row as u16, col as u16)
     }
 
+    /// The rows one logical line takes in a box `width` cells wide, when the
+    /// first row carries a prefix of `prefix` cells: the same arithmetic as
+    /// `cursor_at`, so drawing and cursor agree. A line that fits is one row;
+    /// an empty line is one empty row.
+    pub fn rows(line: &str, width: u16, prefix: usize) -> Vec<String> {
+        use unicode_width::UnicodeWidthChar;
+        let width = (width.max(3) as usize).max(prefix + 1);
+        let mut rows = Vec::new();
+        let mut row = String::new();
+        let mut used = prefix;
+        for c in line.chars() {
+            let w = c.width().unwrap_or(0);
+            if used + w > width {
+                rows.push(std::mem::take(&mut row));
+                used = 0;
+            }
+            row.push(c);
+            used += w;
+        }
+        // A row exactly full ends with the cursor on the next row, as `cursor_at` says.
+        if used == width {
+            rows.push(std::mem::take(&mut row));
+        }
+        rows.push(row);
+        rows
+    }
+
     fn len_chars(&self) -> usize {
         self.text.chars().count()
     }
@@ -226,6 +253,36 @@ mod tests {
         input.word_left();
         input.kill_to_start();
         assert_eq!(&*input, "first\nline");
+    }
+
+    #[test]
+    fn rows_match_the_cursor_arithmetic() {
+        assert_eq!(Input::rows("", 20, 2), vec![""]);
+        assert_eq!(Input::rows("abc", 20, 2), vec!["abc"]);
+        // 2 + 18 fills the row exactly: the next row is empty, where the cursor goes.
+        assert_eq!(
+            Input::rows(&"x".repeat(18), 20, 2),
+            vec!["x".repeat(18), String::new()]
+        );
+        assert_eq!(
+            Input::rows(&"x".repeat(19), 20, 2),
+            vec!["x".repeat(18), "x".to_string()]
+        );
+        // The cursor at the end of each of those lands on the last row's end.
+        for text in ["abc", &"x".repeat(18), &"x".repeat(19)] {
+            let mut input = Input::default();
+            input.set(text.to_string());
+            let (row, col) = input.cursor_at(20);
+            let drawn = Input::rows(text, 20, 2);
+            assert_eq!(row as usize, drawn.len() - 1, "{text}");
+            let last = drawn.last().unwrap();
+            let expected_col = if drawn.len() == 1 {
+                2 + last.len()
+            } else {
+                last.len()
+            };
+            assert_eq!(col as usize, expected_col, "{text}");
+        }
     }
 
     #[test]
