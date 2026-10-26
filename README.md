@@ -47,7 +47,9 @@ shell commands ask first, and one key answers:
 | y / a / n | answers an approval: once, always this session, no |
 | ctrl-c twice | leaves |
 
-The input box takes the Emacs-style editing keys Readline gives your shell.
+Editing in the input box uses the Emacs keybindings, the same ones bash and
+zsh use: ctrl-a and ctrl-e for the ends of the line, ctrl-k to cut to the end,
+alt-b and alt-f to move by a word, and so on.
 
 **Commands** (`/` opens the menu)
 
