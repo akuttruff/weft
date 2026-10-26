@@ -27,6 +27,11 @@ impl App {
             match (key.code, ctrl, alt) {
                 (KeyCode::Enter, false, false) => {
                     let notes = self.input.trim().to_string();
+                    // A slash command is a command, not notes for the planner.
+                    if notes.starts_with('/') {
+                        self.submit(tx);
+                        return;
+                    }
                     self.input.clear();
                     // A plain yes or no is an answer, not a note for the planner.
                     let decision = match notes.to_lowercase().trim_end_matches(['.', '!']) {

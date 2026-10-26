@@ -94,6 +94,17 @@ fn a_plan_goes_on_enter_revises_on_notes_and_stops_on_esc() {
     key(&mut app, &tx, KeyCode::Esc);
     assert_eq!(answer.blocking_recv().unwrap(), PlanDecision::Stop);
 
+    // A slash command at the plan prompt runs as a command; the plan still waits.
+    let (reply, mut answer) = oneshot::channel();
+    app.on_msg(UiMsg::AskPlan { reply });
+    type_text(&mut app, &tx, "/cost");
+    key(&mut app, &tx, KeyCode::Enter);
+    assert!(app.plan_ask.is_some(), "the plan is still waiting");
+    assert!(pending(&app).contains("0 tasks"), "{}", pending(&app));
+    assert!(answer.try_recv().is_err());
+    drop(answer);
+    app.plan_ask = None;
+
     // A typed yes or no is an answer, not notes.
     let (reply, answer) = oneshot::channel();
     app.on_msg(UiMsg::AskPlan { reply });
