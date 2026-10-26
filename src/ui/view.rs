@@ -77,7 +77,31 @@ pub fn replay_lines(saved: &Saved) -> Vec<Line<'static>> {
         if saved.tasks.len() == 1 { "" } else { "s" },
         k(saved.context),
     ));
-    for (task, answer) in saved.exchanges() {
+    // Tasks folded away by compaction have no messages left to replay; say
+    // so, and name them, rather than leaving a gap between the count and
+    // what is shown.
+    let exchanges = saved.exchanges();
+    let replayed: Vec<&str> = exchanges.iter().map(|(t, _)| t.as_str()).collect();
+    let folded: Vec<&str> = saved
+        .tasks
+        .iter()
+        .map(String::as_str)
+        .filter(|t| !replayed.contains(t))
+        .collect();
+    if !folded.is_empty() {
+        lines.extend(note_line(&format!(
+            "  {} earlier task{} folded into the note the worker carries:",
+            folded.len(),
+            if folded.len() == 1 { "" } else { "s" }
+        )));
+        for t in folded {
+            lines.push(Line::from(Span::styled(
+                format!("    > {}", clip(t.lines().next().unwrap_or(""), 90)),
+                Style::new().dim(),
+            )));
+        }
+    }
+    for (task, answer) in exchanges {
         lines.extend(user_line(&task));
         let mut rest = answer.lines().filter(|l| !l.trim().is_empty());
         if let Some(first) = rest.next() {

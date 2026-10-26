@@ -70,6 +70,9 @@ pub struct Session {
     /// and how many tasks it has run: an untouched new file is removed at the end.
     fresh_transcript: Mutex<bool>,
     tasks_run: AtomicUsize,
+    /// How many messages the conversation held when a task took it, so the
+    /// footer's count does not read as empty while the task runs.
+    depth_in_flight: AtomicUsize,
     /// A note for the worker above its next task, set by a resume or an undo.
     lead: Mutex<Option<String>>,
     /// One checkpoint per task that changed files, newest last, for `/undo`.
@@ -111,6 +114,7 @@ impl Session {
             transcript: Mutex::new(None),
             fresh_transcript: Mutex::new(false),
             tasks_run: AtomicUsize::new(0),
+            depth_in_flight: AtomicUsize::new(0),
             lead: Mutex::new(None),
             checkpoints: Mutex::new(Vec::new()),
         }
@@ -280,6 +284,8 @@ impl Session {
         cancel: CancellationToken,
     ) -> Result<TandemOutcome, WorkerError> {
         let mut messages = std::mem::take(&mut *self.messages.lock().unwrap());
+        self.depth_in_flight
+            .store(messages.len().saturating_sub(1), Ordering::Relaxed);
         let allowed = self.allowed.lock().unwrap().clone();
         let lead = self.lead.lock().unwrap().take();
         let before = messages.len();
@@ -457,6 +463,8 @@ impl Session {
         before: u32,
     ) -> Result<Compacted, WorkerError> {
         let mut messages = std::mem::take(&mut *self.messages.lock().unwrap());
+        self.depth_in_flight
+            .store(messages.len().saturating_sub(1), Ordering::Relaxed);
         let ctx = self.ctx.for_task(Some(events.clone()), cancel.clone());
         let result = self.fold(&ctx, events, cancel, &mut messages, before).await;
         *self.messages.lock().unwrap() = messages;
@@ -518,7 +526,10 @@ impl Session {
 
     /// How many messages the worker's conversation holds, system prompt aside.
     pub fn depth(&self) -> usize {
-        self.messages.lock().unwrap().len().saturating_sub(1)
+        match self.messages.lock().unwrap().len() {
+            0 => self.depth_in_flight.load(Ordering::Relaxed),
+            n => n.saturating_sub(1),
+        }
     }
 }
 
