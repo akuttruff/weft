@@ -14,9 +14,13 @@ Built on a Mac Studio with `qwen/qwen3.8-27b` as the planner and
 ## Status
 
 Usable. Type `weft` in a repository and give it a task; plan, work and review
-run end to end in the interface below. MCP servers plug in. Every session is
-written down, can be resumed, and folds its history into a note before the
-context window fills.
+run end to end in the interface below. A plan can wait for your word, a task's
+edits can be undone, and the worker can hand a piece of the work to a helper,
+ask a scout where things live, look at a screenshot, and keep what it learned
+for next time. Your notes in `WEFT.md`, your commands in `.weft/commands/`,
+your hooks and approval rules in the config, and MCP servers all plug in.
+Every session is written down, can be resumed, and folds its history into a
+note before the context window fills.
 
 ## In the terminal
 
@@ -333,20 +337,26 @@ appears. In order:
    `tandem.rs`: the same loop reused for the planner (read-only tools) and the
    reviewer (no tools), and the verdict parser. `scout.rs`: the loop once more,
    wrapped up as a `Tool` the other models can call, with a forwarding task
-   that filters its events. `compact.rs`: slicing a conversation and rewriting
-   it around a note.
+   that filters its events. `delegate.rs`: the same shape with the full tool
+   set and an `Arc<dyn Approver>` carried in through the tool context.
+   `compact.rs`: slicing a conversation and rewriting it around a note.
 4. **`src/mcp.rs`** — a JSON config with `serde`, servers started together with
    `join_all`, a type alias for a long generic, `Arc` sharing one connection
    between its tools, the same `Tool` trait implemented for someone else's tools.
 5. **`src/transcript.rs`** — a tagged `serde` enum as a file format (one JSON
    line per record), a `Mutex<File>` writer, folding records back into a
    `Saved` session with `match`.
-6. **`src/session.rs`** and **`src/ui/`** — the session shared through an
+6. **`src/hooks.rs`**, **`src/commands.rs`**, **`src/checkpoint.rs`** and
+   **`src/tools/memory.rs`** — small modules around one idea each: a
+   `tokio::process::Command` with a timeout and an environment, a file format
+   with a header, a `Mutex` of kept copies, an append to a file that stays
+   idempotent.
+7. **`src/session.rs`** and **`src/ui/`** — the session shared through an
    `Arc` with `Mutex`es held only briefly, an `AtomicU32` read off a forwarding
    task; the screen as a `tokio::select!` loop over key events, agent events
    and a tick; ratatui's inline viewport with `insert_before` for the
    transcript; approvals as a `oneshot` channel.
-7. **`src/main.rs`** — clap subcommands, `spawn_blocking` for stdin, generics
+8. **`src/main.rs`** — clap subcommands, `spawn_blocking` for stdin, generics
    over a closure that returns a future.
 
 ## Development
