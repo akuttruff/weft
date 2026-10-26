@@ -39,10 +39,8 @@ impl Tool for SeeImage {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "see_image".into(),
-            description: "Look at an image file in the project (a screenshot, a rendered page, a \
-                          diagram, a photo of a sketch) and answer a question about it, or describe \
-                          it when there is no question. Use it whenever the task refers to a \
-                          picture; you cannot see images any other way."
+            description: "Look at an image file (a screenshot, a diagram) and answer a question \
+                          about it, or describe it. The only way you can see a picture."
                 .into(),
             parameters: json!({
                 "type": "object",

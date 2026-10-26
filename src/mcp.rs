@@ -159,6 +159,36 @@ pub struct McpTool {
     info: ToolInfo,
 }
 
+/// How much of a server's tool description the model is shown.
+const BRIEF_CHARS: usize = 240;
+
+/// The first paragraph of a description, cut at a word: servers write
+/// essays, and every one of them rides along on every worker turn.
+pub fn brief(description: &str) -> String {
+    let first = description
+        .split("\n\n")
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if first.chars().count() <= BRIEF_CHARS {
+        return first;
+    }
+    let mut out = String::new();
+    for word in first.split(' ') {
+        if out.chars().count() + word.chars().count() + 1 > BRIEF_CHARS {
+            break;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out.push('…');
+    out
+}
+
 /// `server__tool`: the name the model sees.
 pub fn tool_name(server: &str, tool: &str) -> String {
     format!("{server}__{tool}")
@@ -174,7 +204,7 @@ impl Tool for McpTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: tool_name(&self.server, &self.info.name),
-            description: self.info.description.as_deref().unwrap_or("").to_string(),
+            description: brief(self.info.description.as_deref().unwrap_or("")),
             parameters: Value::Object((*self.info.input_schema).clone()),
         }
     }
@@ -247,6 +277,18 @@ mod tests {
         assert!(config.servers["notes"].args.is_empty());
         let missing = McpConfig::load(Path::new("/nonexistent/mcp.json")).unwrap();
         assert!(missing.servers.is_empty());
+    }
+
+    #[test]
+    fn descriptions_are_cut_to_a_first_paragraph() {
+        assert_eq!(brief("Short.\n\nMore here."), "Short.");
+        let long = "word ".repeat(100);
+        let b = brief(&long);
+        assert!(
+            b.chars().count() <= BRIEF_CHARS + 1 && b.ends_with('…'),
+            "{b}"
+        );
+        assert_eq!(brief("  spaced\n out  "), "spaced out");
     }
 
     #[test]

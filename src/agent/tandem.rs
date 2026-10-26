@@ -30,7 +30,7 @@ pub enum Mode {
 }
 
 /// What a whole task amounted to.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct TandemOutcome {
     pub plan: Option<String>,
     pub answer: String,

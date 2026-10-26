@@ -287,6 +287,8 @@ weft                       # the interface, in the current folder
 weft resume [id]           # the interface, continuing the last (or the given) session
 weft run "task"            # one task on a plain line printer, then exit (for scripts)
 weft run --session last "task"   # the same, continuing a session (an id or `last`)
+weft run --plan|--go --accept --json "task"   # plan first or not; edits without asking; JSON lines
+weft tools                 # the worker's tools and what each costs in every prompt
 weft sessions              # this folder's sessions
 weft init                  # a starter config and WEFT.md, where missing
 weft -y …                  # approve every tool call without asking

@@ -31,11 +31,8 @@ impl Tool for Remember {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "remember".into(),
-            description: "Keep one fact about this project for later tasks and sessions: how its \
-                          tests or build run, a convention, a trap you hit, where something \
-                          unobvious lives. One short standalone sentence. It is shown at the start \
-                          of every task. Not for the current task's progress or anything already \
-                          in the project notes."
+            description: "Keep one fact about this project for later sessions: how tests run, a \
+                          convention, a trap. One sentence; not the current task's progress."
                 .into(),
             parameters: json!({
                 "type": "object",

@@ -33,11 +33,9 @@ impl Tool for Scout {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "scout".into(),
-            description: "Ask one question about where something lives or how it works in this \
-                          project. A second model searches and reads the code and answers with \
-                          paths, line numbers and a short explanation, never file contents. Use \
-                          it before reading files when you do not know where to look; then read \
-                          the exact spot yourself. One specific question per call."
+            description: "One question about where something lives or how it works here; a \
+                          second model reads the code and answers with paths and line numbers. \
+                          Ask before reading when you do not know where to look."
                 .into(),
             parameters: json!({
                 "type": "object",

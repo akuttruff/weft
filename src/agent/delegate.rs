@@ -35,12 +35,11 @@ impl Tool for Delegate {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "delegate".into(),
-            description: "Hand one self-contained part of the task to a helper that works in its \
-                          own context with the same tools, then reports back. Use it for a part \
-                          that means reading many files you do not want in your own context, or \
-                          that can be done on its own. The helper cannot see this conversation: \
-                          say exactly what to do, where, and what to report. Its edits are real."
-                .into(),
+            description:
+                "Hand one self-contained part of the task to a helper with the same tools \
+                          and its own context; it edits for real and reports back. It cannot see \
+                          this conversation: say exactly what to do and what to report."
+                    .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {

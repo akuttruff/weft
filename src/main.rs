@@ -53,6 +53,18 @@ enum Command {
         /// Continue an earlier session: its id, or `last`
         #[arg(long, value_name = "ID")]
         session: Option<String>,
+        /// Plan first, and pause for a word on the plan
+        #[arg(long, conflicts_with = "go")]
+        plan: bool,
+        /// Straight to work, no plan
+        #[arg(long)]
+        go: bool,
+        /// Edits and new files without asking; shell commands still ask
+        #[arg(long)]
+        accept: bool,
+        /// One JSON object per line: every event, then the outcome
+        #[arg(long)]
+        json: bool,
     },
     /// Pick up this folder's last session, or the one with this id.
     Resume { id: Option<String> },
@@ -69,6 +81,8 @@ enum Command {
     },
     /// Start the MCP servers in ~/.config/weft/mcp.json and list their tools.
     Mcp,
+    /// List the worker's tools and what they cost in every prompt.
+    Tools,
     /// List this folder's earlier sessions.
     Sessions,
     /// Write a starter config and a WEFT.md for this folder, where missing.
@@ -156,6 +170,10 @@ async fn main() -> Result<()> {
         Some(Command::Run {
             task,
             session: which,
+            plan,
+            go,
+            accept,
+            json,
         }) => {
             let mut session = Session::new(&config, std::env::current_dir()?);
             session.attach_mcp(connect_mcp().await?);
@@ -181,13 +199,43 @@ async fn main() -> Result<()> {
                     eprintln!("\x1b[31mmcp {}: {e}\x1b[0m", status.name);
                 }
             }
-            let result = run_once(&session, task, args.yes, think).await;
+            if accept {
+                session.allow(&["edit_file", "write_file"], true);
+            }
+            let mode = match (plan, go) {
+                (true, _) => Mode::Plan,
+                (_, true) => Mode::Go,
+                _ => Mode::Auto,
+            };
+            let result = run_once(&session, task, args.yes, think, mode, json).await;
             session.finish();
             result
         }
         Some(Command::Probe { question }) => probe(&config, question, args.think).await,
         Some(Command::Tool { name, args }) => tool(&config, name, args).await,
         Some(Command::Init) => unreachable!("handled before the config loads"),
+        Some(Command::Tools) => {
+            let mut session = Session::new(&config, std::env::current_dir()?);
+            session.attach_mcp(connect_mcp().await?);
+            let specs = session.registry.specs();
+            let total = weft::lm::raw::render(&[], &specs, false).len() / 4;
+            println!(
+                "\x1b[1m{} tools\x1b[0m · about {total} tokens of every worker prompt\n",
+                specs.len()
+            );
+            for spec in &specs {
+                let cost = serde_json::to_string(spec)
+                    .map(|s| s.len() / 4)
+                    .unwrap_or(0);
+                let first = spec.description.lines().next().unwrap_or("");
+                let first: String = first.chars().take(90).collect();
+                println!(
+                    "  \x1b[36m{:<28}\x1b[0m \x1b[2m~{cost:>4} tokens\x1b[0m  {first}",
+                    spec.name
+                );
+            }
+            Ok(())
+        }
         Some(Command::Sessions) => {
             let dir = transcript::dir_for(&std::env::current_dir()?)?;
             let all = transcript::list(&dir)?;
@@ -329,9 +377,20 @@ async fn connect_mcp() -> Result<Vec<(weft::mcp::Status, Option<weft::mcp::Serve
 }
 
 /// One task on the plain printer: for scripts and for watching the raw stream.
-async fn run_once(session: &Session, task: String, yes: bool, think: bool) -> Result<()> {
+async fn run_once(
+    session: &Session,
+    task: String,
+    yes: bool,
+    think: bool,
+    mode: Mode,
+    json: bool,
+) -> Result<()> {
     let (events, rx) = tokio::sync::mpsc::channel::<AgentEvent>(256);
-    let printer = tokio::spawn(print_events(rx));
+    let printer = if json {
+        tokio::spawn(print_json(rx))
+    } else {
+        tokio::spawn(print_events(rx))
+    };
     let cancel = CancellationToken::new();
     let on_ctrl_c = {
         let cancel = cancel.clone();
@@ -347,10 +406,23 @@ async fn run_once(session: &Session, task: String, yes: bool, think: bool) -> Re
     };
     let began = Instant::now();
     let result = session
-        .run_task(&task, Mode::Auto, think, approver, events, cancel)
+        .run_task(&task, mode, think, approver, events, cancel)
         .await;
     on_ctrl_c.abort();
     let _ = printer.await;
+
+    if json {
+        // The outcome, or the error, as the last line; a script reads that.
+        let line = match &result {
+            Ok(o) => json!({ "kind": "outcome", "outcome": o }),
+            Err(e) => json!({ "kind": "error", "error": e.to_string() }),
+        };
+        println!("{line}");
+        return match result {
+            Ok(_) | Err(WorkerError::Cancelled) => Ok(()),
+            Err(e) => Err(e.into()),
+        };
+    }
 
     let outcome = match result {
         Ok(o) => o,
@@ -422,6 +494,15 @@ impl Approver for Terminal {
             Some("") | Some("y") | Some("yes") | Some("go") => PlanDecision::Go,
             None | Some("n") | Some("no") | Some("stop") => PlanDecision::Stop,
             Some(notes) => PlanDecision::Revise(notes.to_string()),
+        }
+    }
+}
+
+/// Every event as one JSON object per line, for scripts.
+async fn print_json(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
+    while let Some(evt) = rx.recv().await {
+        if let Ok(line) = serde_json::to_string(&json!({ "kind": "event", "event": evt })) {
+            println!("{line}");
         }
     }
 }
