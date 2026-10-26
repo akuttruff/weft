@@ -12,7 +12,7 @@ use crate::lm::{Message, Request, StreamEvent, Usage};
 use crate::tools::{Ctx, Registry, ToolError};
 
 /// Tool rounds before the loop gives up on a task.
-pub const MAX_ROUNDS: usize = 60;
+pub const MAX_ROUNDS: usize = 120;
 const MAX_TOKENS: u32 = 8_000;
 /// Room left under the window for the answer and the next tool results.
 const MARGIN: u32 = 4_000;
@@ -69,6 +69,9 @@ pub struct Worker<'a> {
     /// A small model that can fold this task's earlier rounds into a note
     /// when dropping old results is not enough. None: the task stops instead.
     pub digest: Option<&'a dyn Model>,
+    /// At the round cap, ask for a report and end well rather than fail.
+    /// The scout keeps the failure: a wrong answer is worse than none.
+    pub wrap_up: bool,
 }
 
 impl<'a> Worker<'a> {
@@ -93,7 +96,14 @@ impl<'a> Worker<'a> {
             max_rounds: MAX_ROUNDS,
             window: crate::config::DEFAULT_WINDOW,
             digest: None,
+            wrap_up: true,
         }
+    }
+
+    /// Whether the round cap ends with a report (true) or an error.
+    pub fn wrap_up(mut self, wrap_up: bool) -> Self {
+        self.wrap_up = wrap_up;
+        self
     }
 
     /// The model that folds a long task's earlier rounds into a note.
@@ -241,7 +251,37 @@ impl Worker<'_> {
                 }
             }
         }
-        Err(WorkerError::TooManyRounds(self.max_rounds))
+        if !self.wrap_up {
+            return Err(WorkerError::TooManyRounds(self.max_rounds));
+        }
+        // The rounds are spent but the work is not lost: one last turn with no
+        // tools on offer, for a report the user can say "continue" to.
+        self.emit(AgentEvent::Note {
+            text: format!(
+                "paused after {} tool rounds; the worker reports, and \"continue\" picks it up",
+                self.max_rounds
+            ),
+        })
+        .await;
+        messages.push(Message::User(super::prompts::WRAP_UP.into()));
+        let req = Request {
+            messages: messages.clone(),
+            tools: Vec::new(),
+            max_tokens: MAX_TOKENS,
+        };
+        let reply = self.turn(&req).await?;
+        outcome.usage = add(outcome.usage, reply.usage);
+        outcome.answer = if reply.content.trim().is_empty() {
+            "(paused: the rounds are spent; say \"continue\" to go on)".to_string()
+        } else {
+            reply.content.trim().to_string()
+        };
+        messages.push(Message::Assistant {
+            content: outcome.answer.clone(),
+            reasoning: None,
+            tool_calls: vec![],
+        });
+        Ok(outcome)
     }
 
     /// One model turn, forwarding its stream to the screen.
@@ -498,6 +538,7 @@ mod tests {
                 AgentEvent::Trimmed { .. } => "trimmed",
                 AgentEvent::Hook { .. } => "hook",
                 AgentEvent::Step { .. } => "step",
+                AgentEvent::Note { .. } => "note",
                 AgentEvent::Compacted { .. } => "compacted",
                 AgentEvent::Reasoning { .. } => "think",
                 AgentEvent::Phase { .. } | AgentEvent::Plan { .. } | AgentEvent::Review { .. } => {
@@ -733,5 +774,63 @@ mod tests {
             .collect();
         assert!(texts[..3].iter().all(|t| t == OMITTED));
         assert_eq!(texts[3].len(), 500, "the newest call keeps its text");
+    }
+    #[tokio::test]
+    async fn the_round_cap_ends_with_a_report_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let registry = Registry::builtin();
+        let ctx = Ctx::new(dir.path().to_path_buf());
+        let read = || Reply {
+            tool_calls: vec![call("c", "read_file", json!({"path": "a.txt"}))],
+            ..Default::default()
+        };
+        let model = Scripted {
+            replies: Mutex::new(vec![
+                read(),
+                read(),
+                Reply {
+                    content: "Read a.txt twice; nothing changed; next: edit it.".into(),
+                    ..Default::default()
+                },
+            ]),
+            seen: Mutex::new(vec![]),
+        };
+        let (events, mut rx) = mpsc::channel(64);
+        let mut worker = Worker::new(&model, &registry, &ctx, &Yes, events)
+            .rounds(2)
+            .window(0);
+        let mut messages = vec![Message::User("look".into())];
+        let out = worker.run(&mut messages).await.unwrap();
+        assert!(out.answer.starts_with("Read a.txt twice"));
+        // The last request offered no tools, and the report closes the conversation.
+        assert_eq!(model.seen.lock().unwrap().len(), 3);
+        assert!(
+            matches!(messages.last(), Some(Message::Assistant { tool_calls, .. }) if tool_calls.is_empty())
+        );
+        drop(worker);
+        let mut noted = false;
+        while let Some(evt) = rx.recv().await {
+            if matches!(evt, AgentEvent::Note { ref text } if text.contains("paused after 2")) {
+                noted = true;
+            }
+        }
+        assert!(noted);
+
+        // Without wrap-up, the cap is still an error (the scout's choice).
+        let model = Scripted {
+            replies: Mutex::new(vec![read(), read()]),
+            seen: Mutex::new(vec![]),
+        };
+        let (events, _rx) = mpsc::channel(64);
+        let mut worker = Worker::new(&model, &registry, &ctx, &Yes, events)
+            .rounds(2)
+            .window(0)
+            .wrap_up(false);
+        let err = worker
+            .run(&mut vec![Message::User("look".into())])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, WorkerError::TooManyRounds(2)));
     }
 }

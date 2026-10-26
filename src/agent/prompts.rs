@@ -22,6 +22,10 @@ After editing code, run the narrowest real check (one test file, a type-check, a
 pub const DELEGATE_BRIEF: &str = "\
 You are a helper working on one part of a larger task; the worker that asked will carry on after you and cannot see what you read. Do only what is asked. If you change code, run the narrowest real check. Answer with what you changed as `path:line`, what you ran and what it showed, and anything the asker must know to continue.";
 
+/// Sent when a task has used all its tool rounds; the next turn has no tools.
+pub const WRAP_UP: &str = "\
+Stop here: this task has used the tool rounds it is allowed, and no tools are available for this turn. Answer with what you changed (as `path:line`), what you verified and how, and exactly what is left to do, so the user can say \"continue\" and the next task picks it up.";
+
 /// One of the plan's tasks, handed to the worker on its own.
 pub fn step_message(n: usize, of: usize, step: &str) -> String {
     format!(

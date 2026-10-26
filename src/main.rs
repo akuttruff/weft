@@ -677,6 +677,7 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
                 }
                 at_line_start = true;
             }
+            AgentEvent::Note { text } => println!("\x1b[2m  {text}\x1b[0m"),
             AgentEvent::Step { n, of, text } => {
                 println!("\x1b[35m✻\x1b[0m \x1b[1mstep {n} of {of}\x1b[0m · {text}");
             }

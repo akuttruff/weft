@@ -87,7 +87,8 @@ a word, and so on.
    round by default.
 
 Tasks given one after another share the worker's conversation, so "now do the
-same for X" works. A task that stops early, by esc or by running out of
+same for X" works. A task that reaches its cap of 120 tool rounds ends with
+a report of what is done and what is left, and "continue" picks it up. A task that stops early, by esc or by running out of
 room, keeps the steps it finished, closed with a line saying why, so the next
 task or a resume can carry on from them.
 

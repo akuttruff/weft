@@ -43,6 +43,10 @@ impl App {
                 }
                 self.push(view::phase_line(name));
             }
+            AgentEvent::Note { text } => {
+                self.flush_text();
+                self.push(view::note_line(&format!("  {text}")));
+            }
             AgentEvent::Step { n, of, text } => {
                 self.flush_text();
                 if let Some(r) = &mut self.running {

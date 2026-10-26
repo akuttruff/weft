@@ -91,6 +91,10 @@ pub enum AgentEvent {
     Phase {
         name: String,
     },
+    /// A line for the screen with nothing else behind it.
+    Note {
+        text: String,
+    },
     /// The plan was split into tasks and this one is starting.
     Step {
         n: usize,

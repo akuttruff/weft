@@ -72,7 +72,8 @@ impl Tool for Scout {
 
         let mut worker = Worker::new(self.model.as_ref(), &registry, ctx, &Yes, events)
             .role(Role::Scout)
-            .rounds(SCOUT_ROUNDS);
+            .rounds(SCOUT_ROUNDS)
+            .wrap_up(false);
         let mut convo = vec![
             Message::System(prompts::SCOUT.into()),
             Message::User(format!("{}## Question\n{question}", snapshot(&ctx.root))),
