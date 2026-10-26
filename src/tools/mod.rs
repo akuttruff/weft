@@ -125,6 +125,7 @@ pub trait Tool: Send + Sync {
 
 /// Calls that run without asking: `[approve]` in the config.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Rules {
     /// Tools that never ask, by name.
     #[serde(default)]

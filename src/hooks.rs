@@ -32,6 +32,7 @@ pub enum On {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Hook {
     pub on: On,
     pub run: String,

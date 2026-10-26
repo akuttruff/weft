@@ -10,6 +10,7 @@ use crate::lm::Effort;
 use crate::tools::Rules;
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub lm_studio: LmStudio,
     pub planner: Planner,
@@ -31,6 +32,7 @@ pub struct Config {
 /// The model that looks at images for `see_image`: a vision model on the
 /// chat route. The planner's by default; your models are all vision models.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Vision {
     #[serde(default)]
     pub model: Option<String>,
@@ -49,6 +51,7 @@ impl Default for Vision {
 
 /// When the worker's conversation is folded into a handover note.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Compact {
     /// Compact after a task once the worker's context reaches this many
     /// tokens. 0 never compacts on its own; `/compact` still works.
@@ -81,6 +84,7 @@ fn default_window() -> u32 {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LmStudio {
     /// `http://127.0.0.1:1234`, no trailing slash.
     #[serde(default = "default_url")]
@@ -93,6 +97,7 @@ pub struct LmStudio {
 /// The model that plans and reviews: it answers on the OpenAI-style chat route,
 /// which lets LM Studio apply its reasoning-effort levels.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Planner {
     pub model: String,
     #[serde(default = "Effort::medium")]
@@ -139,6 +144,7 @@ fn default_review_rounds() -> u8 {
 /// The model that runs the tool loop: prompted on the raw completions route,
 /// so its thinking can be switched off.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Worker {
     pub model: String,
     /// Think by default? Off: the plan carries the reasoning.
@@ -149,6 +155,7 @@ pub struct Worker {
 /// The model that answers the scout's questions: the worker's by default,
 /// thinking off, because finding a file wants speed, not deep thought.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Scout {
     /// Default: the worker's model.
     #[serde(default)]
@@ -214,5 +221,19 @@ model = "qwen3.5-122b-a10b"
         assert!(config.hooks.is_empty());
         assert_eq!(config.vision.model, None);
         assert_eq!(config.vision.effort, Effort::Low);
+    }
+
+    #[test]
+    fn a_misspelt_key_is_an_error_not_a_silent_default() {
+        let text = r#"
+[lm_studio]
+[planner]
+model = "p"
+review_efort = "low"
+[worker]
+model = "w"
+"#;
+        let err = toml::from_str::<Config>(text).unwrap_err().to_string();
+        assert!(err.contains("review_efort"), "{err}");
     }
 }
