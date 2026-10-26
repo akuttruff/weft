@@ -13,8 +13,8 @@ Built on a Mac Studio with `qwen/qwen3.8-27b` as the planner and
 
 ## Status
 
-Usable. Type `weft` in a repository and give it a task; plan, work and review
-run end to end in the interface below. A plan can wait for your word, a task's
+Ready for real work. Type `weft` in a repository and give it a task; plan,
+work and review run end to end in the interface below. A plan can wait for your word, a task's
 edits can be undone, and the worker can hand a piece of the work to a helper,
 ask a scout where things live, look at a screenshot, and keep what it learned
 for next time. Your notes in `WEFT.md`, your commands in `.weft/commands/`,
