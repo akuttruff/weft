@@ -187,8 +187,26 @@ impl Tandem<'_> {
                     first.push_str("\n\n");
                     first.push_str(&prompts::step_message(1, steps.len(), step));
                 }
+                let step_from = messages.len();
                 let done = self.work(self.worker, messages).await?;
                 out.take(&done);
+                // A finished round's steps fold into a note before the next
+                // begins, so the window carries a summary of each round, not
+                // its every read and edit. The round's answer stays.
+                if i + 1 < steps.len()
+                    && let Some(digest) = self.digest
+                {
+                    let _ = super::compact::fold_task(
+                        digest,
+                        self.ctx,
+                        self.events.clone(),
+                        self.cancel.clone(),
+                        messages,
+                        step_from,
+                        1,
+                    )
+                    .await;
+                }
             }
         } else {
             let done = self.work(self.worker, messages).await?;

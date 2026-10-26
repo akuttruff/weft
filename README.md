@@ -92,9 +92,10 @@ room, keeps the steps it finished, closed with a line saying why, so the next
 task or a resume can carry on from them.
 
 **Large work runs in rounds.** When the plan spans more than a few files,
-the planner adds a `## Tasks` section and the worker does them one at a time:
-each starts with a fresh look at the code, answers, and gets the next, so a
-big ask no longer piles up in one window. The review comes once at the end.
+the planner adds a `## Tasks` section and the worker does them one at a time.
+When a round is done, its reads and edits are folded into a short note and
+the next round begins from that, so a big ask no longer piles up in one
+window. The review comes once at the end.
 
 **Plan mode.** A task given as `/plan <task>` stops once the plan is on the
 screen. Enter, or a typed "yes", lets the worker go; "no" or esc stops the
@@ -287,10 +288,11 @@ mode and the undo history belong to the process and start afresh.
 `[compact] at`, the earlier tasks are folded into a handover note written by
 the scout's model: what was done, which files changed and how, decisions,
 loose ends. The last task stays verbatim and the worker carries on from the
-note. `/compact` does it on demand. Inside a task, the file text of old edits
-is blanked every round (the disk has it), old tool results are dropped as the
-window fills, and when that is not enough the task's earlier steps are folded
-into a progress note and the worker carries on.
+note. `/compact` does it on demand. Inside a task, as the window fills, old
+tool results and the file text of old edits are dropped first (the disk has
+them), and when that is not enough the task's earlier steps are folded into a
+progress note and the worker carries on. Both change earlier messages, which
+costs a partial re-prefill, so they wait until the window needs it.
 
 ## Images
 
