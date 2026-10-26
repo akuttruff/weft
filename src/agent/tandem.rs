@@ -165,8 +165,35 @@ impl Tandem<'_> {
             self.lead.clone()
         };
         messages.push(Message::User(task_message(&lead, task, plan.as_deref())));
-        let done = self.work(self.worker, messages).await?;
-        out.take(&done);
+        // A plan with a `## Tasks` section runs as rounds: the worker does
+        // one, answers, and gets the next, so each starts with a fresh look
+        // at the code and the window is trimmed between them.
+        let steps = plan.as_deref().map(steps_of).unwrap_or_default();
+        if steps.len() >= 2 {
+            for (i, step) in steps.iter().enumerate() {
+                self.emit(AgentEvent::Step {
+                    n: i + 1,
+                    of: steps.len(),
+                    text: step.clone(),
+                })
+                .await;
+                if i > 0 {
+                    messages.push(Message::User(prompts::step_message(
+                        i + 1,
+                        steps.len(),
+                        step,
+                    )));
+                } else if let Some(Message::User(first)) = messages.last_mut() {
+                    first.push_str("\n\n");
+                    first.push_str(&prompts::step_message(1, steps.len(), step));
+                }
+                let done = self.work(self.worker, messages).await?;
+                out.take(&done);
+            }
+        } else {
+            let done = self.work(self.worker, messages).await?;
+            out.take(&done);
+        }
 
         // 3. Review what was changed, and send the worker back if asked.
         // Helpers' edits count too; the checkpoint saw every file the tools changed.
@@ -306,6 +333,24 @@ impl TandemOutcome {
             }
         }
     }
+}
+
+/// The numbered lines under a plan's `## Tasks` heading, if it has one.
+pub fn steps_of(plan: &str) -> Vec<String> {
+    let Some((_, after)) = plan.split_once("## Tasks") else {
+        return Vec::new();
+    };
+    let section = after.split("\n## ").next().unwrap_or("");
+    section
+        .lines()
+        .map(str::trim)
+        .filter_map(|l| {
+            let rest = l.trim_start_matches(|c: char| c.is_ascii_digit());
+            (rest.len() < l.len() && (rest.starts_with('.') || rest.starts_with(')')))
+                .then(|| rest[1..].trim().to_string())
+        })
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 /// The reviewer's verdict and the rest of what it said. No verdict line reads
@@ -917,6 +962,88 @@ mod tests {
             s.starts_with("## Project\n") && s.contains("## Project notes"),
             "{s}"
         );
+    }
+
+    #[test]
+    fn steps_come_from_the_tasks_section() {
+        let plan = "## Plan\n1. a.rs: x\n\n## Verify\ncargo test\n\n## Tasks\n1. Add the type.\n2) Wire it in.\n\n## Watch out\nNothing";
+        assert_eq!(steps_of(plan), ["Add the type.", "Wire it in."]);
+        assert!(steps_of("## Plan\n1. a.rs: x").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_plan_with_tasks_runs_the_worker_once_per_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(dir.path().to_path_buf());
+        let registry = Registry::builtin();
+        let planner = Scripted::new(
+            "planner",
+            vec![Scripted::text(
+                "## Plan\n1. do things\n\n## Verify\ntrue\n\n## Tasks\n1. First piece.\n2. Second piece.\n3. Third piece.",
+            )],
+        );
+        let worker = Scripted::new(
+            "worker",
+            vec![
+                Scripted::text("Did one."),
+                Scripted::text("Did two."),
+                Scripted::text("Did three."),
+            ],
+        );
+        let (events, mut rx) = mpsc::channel(64);
+        let mut tandem = Tandem {
+            planner: &planner,
+            reviewer: &planner,
+            worker: &worker,
+            worker_thinking: &worker,
+            registry: &registry,
+            planner_registry: &registry,
+            ctx: &ctx,
+            approver: &Yes,
+            events,
+            cancel: CancellationToken::new(),
+            allowed: HashSet::new(),
+            when: PlanWhen::Always,
+            review_rounds: 1,
+            confirm: Confirm::Never,
+            lead: String::new(),
+            window: crate::config::DEFAULT_WINDOW,
+            digest: None,
+        };
+        let mut messages = vec![Message::System("sys".into())];
+        let out = tandem
+            .run("build it all", Mode::Plan, &mut messages)
+            .await
+            .unwrap();
+        assert_eq!(out.answer, "Did three.");
+        let seen = worker.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 3);
+        assert!(
+            seen[0].contains("build it all") && seen[0].contains("## Step 1 of 3"),
+            "{}",
+            seen[0]
+        );
+        assert!(
+            seen[1].starts_with("## Step 2 of 3\nSecond piece."),
+            "{}",
+            seen[1]
+        );
+        // The steps are not tasks of their own in the session's eyes.
+        assert_eq!(
+            exchanges(&messages[1..])
+                .iter()
+                .map(|(t, _)| t.as_str())
+                .collect::<Vec<_>>(),
+            ["build it all"]
+        );
+        drop(tandem);
+        let mut steps = 0;
+        while let Some(evt) = rx.recv().await {
+            if matches!(evt, AgentEvent::Step { .. }) {
+                steps += 1;
+            }
+        }
+        assert_eq!(steps, 3);
     }
 
     #[test]

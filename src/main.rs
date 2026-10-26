@@ -677,6 +677,9 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
                 }
                 at_line_start = true;
             }
+            AgentEvent::Step { n, of, text } => {
+                println!("\x1b[35m✻\x1b[0m \x1b[1mstep {n} of {of}\x1b[0m · {text}");
+            }
             AgentEvent::Hook { ok, text } => {
                 if !text.is_empty() {
                     let color = if ok { "2" } else { "31" };

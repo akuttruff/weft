@@ -22,6 +22,13 @@ After editing code, run the narrowest real check (one test file, a type-check, a
 pub const DELEGATE_BRIEF: &str = "\
 You are a helper working on one part of a larger task; the worker that asked will carry on after you and cannot see what you read. Do only what is asked. If you change code, run the narrowest real check. Answer with what you changed as `path:line`, what you ran and what it showed, and anything the asker must know to continue.";
 
+/// One of the plan's tasks, handed to the worker on its own.
+pub fn step_message(n: usize, of: usize, step: &str) -> String {
+    format!(
+        "## Step {n} of {of}\n{step}\n\nDo only this step of the plan now; the others come as separate requests. Run the narrowest check for it and answer as before."
+    )
+}
+
 /// Prefixed to the task when the planner has written a plan.
 pub const WORKER_WITH_PLAN: &str = "\
 Follow the plan below step by step. If a step turns out wrong once you see the code, say so in your answer and do the nearest right thing rather than forcing it.";
@@ -45,6 +52,14 @@ The one command the worker should run when done.
 
 ## Watch out
 Up to three bullets on pitfalls you noticed, or `Nothing`.
+
+When the work is large, more than about three files or several distinct pieces, add one more section so the worker does it in rounds, each with a fresh look at the code and room in its window:
+
+## Tasks
+1. One line: a piece the worker can finish and verify on its own.
+2. ...
+
+Two to six tasks, in the order to do them, each a sentence. Leave the section out for small work.
 
 Keep it under 250 words. Name files and functions precisely. Give code only where one line settles an ambiguity. If the task is a question rather than a change, the plan is how to find the answer.";
 

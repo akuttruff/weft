@@ -189,6 +189,11 @@ impl Worker<'_> {
                 });
             }
 
+            // The file text inside old edits goes every round: the model has
+            // seen the diff and the disk has the file, so carrying it costs
+            // prefill for nothing. The newest few stay for the model to refer to.
+            shrink_old_calls(messages, KEEP_RESULTS);
+
             // Near the window, old tool results and the file contents of old
             // edits go first: the model has seen them, and the disk has them.
             // When nothing is left to drop, the task's earlier rounds are
@@ -497,6 +502,7 @@ mod tests {
                 AgentEvent::TurnEnd { .. } => "end",
                 AgentEvent::Trimmed { .. } => "trimmed",
                 AgentEvent::Hook { .. } => "hook",
+                AgentEvent::Step { .. } => "step",
                 AgentEvent::Compacted { .. } => "compacted",
                 AgentEvent::Reasoning { .. } => "think",
                 AgentEvent::Phase { .. } | AgentEvent::Plan { .. } | AgentEvent::Review { .. } => {

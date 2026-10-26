@@ -91,6 +91,12 @@ pub enum AgentEvent {
     Phase {
         name: String,
     },
+    /// The plan was split into tasks and this one is starting.
+    Step {
+        n: usize,
+        of: usize,
+        text: String,
+    },
     /// The planner's plan, whole.
     Plan {
         text: String,

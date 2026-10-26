@@ -43,6 +43,13 @@ impl App {
                 }
                 self.push(view::phase_line(name));
             }
+            AgentEvent::Step { n, of, text } => {
+                self.flush_text();
+                if let Some(r) = &mut self.running {
+                    r.phase = "working";
+                }
+                self.push(view::phase_line(&format!("step {n} of {of} · {text}")));
+            }
             AgentEvent::TurnStart { role } => {
                 if let Some(r) = &mut self.running {
                     r.turn = Some((role, 0));
