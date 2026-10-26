@@ -7,6 +7,8 @@
 
 pub mod bash;
 pub mod files;
+pub mod image;
+pub mod memory;
 pub mod search;
 
 use std::path::{Component, Path, PathBuf};

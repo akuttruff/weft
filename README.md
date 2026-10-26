@@ -147,6 +147,10 @@ thinking = false            # the planner carries the reasoning; fix rounds thin
 [compact]
 at = 48000                  # fold the conversation once the worker's context reaches this; 0 never
 
+[vision]                    # the model that looks at images for see_image
+# model = "qwen/qwen3.8-27b"  # default: the planner's
+effort = "low"
+
 [approve]                   # tool calls that never ask
 # tools = ["edit_file"]
 commands = ["cargo test", "cargo build", "cargo clippy", "git status", "git diff", "git log", "ls"]
@@ -227,6 +231,23 @@ and what the hook printed is the reason the worker sees. `after_task` runs
 when a task ends, with `WEFT_TOUCHED` listing the files it changed; its output
 is shown on the screen.
 
+## Memory
+
+`WEFT.md` is what you tell weft. What weft learns on its own goes through the
+`remember` tool into `~/.local/share/weft/memory/<folder>.md`, one fact per
+line: how the tests run, a convention, a trap it hit. The file is shown at
+the start of every task after your notes, in this session and the next.
+`/memory` prints it; edit or delete lines in the file as you like.
+
+## Images
+
+The worker runs on the raw completions route, which carries no images, so
+`see_image` sends a picture to a vision model on the chat route and brings
+the words back: a description, or the answer to a question about it. Your
+models are all vision models; the planner's is used unless `[vision]` in the
+config names another. Point the worker at a screenshot in the task text and
+it will look.
+
 ## Approvals
 
 Edits, new files and shell commands ask first: `[y] once  [a] always this
@@ -294,6 +315,8 @@ against the project root and refused outside it, symlinks included. `pkill`,
 | `bash` | Runs in the project root, timeout, last 200 lines of output |
 | `scout` | One where-or-how question, answered by a read-only run of another model |
 | `delegate` | One self-contained piece of the task, done by a fresh worker that reports back |
+| `see_image` | A description of, or an answer about, an image file, from a vision model |
+| `remember` | One fact about the project, kept for later tasks and sessions |
 | `server__tool` | Any tool of a configured MCP server; asks first |
 
 ## Reading the code to learn Rust

@@ -61,6 +61,7 @@ const COMMANDS: &[(&str, &str, bool)] = &[
     ("/compact", "fold earlier tasks into a note", false),
     ("/undo", "put back the files the last task changed", false),
     ("/resume", "pick up an earlier session", true),
+    ("/memory", "what weft has kept about this project", false),
     ("/cost", "tokens used this session", false),
     ("/mcp", "MCP servers and their tools", false),
     ("/help", "keys and commands", false),
@@ -844,6 +845,27 @@ impl App {
                 view::k(self.context),
                 view::k(self.session.window),
             ))),
+            "/memory" => {
+                let file = self.session.memory_file();
+                let text = file
+                    .as_ref()
+                    .and_then(|f| std::fs::read_to_string(f).ok())
+                    .unwrap_or_default();
+                match file {
+                    Some(f) if !text.trim().is_empty() => {
+                        let mut lines = view::note_line(&format!("kept in {}", f.display()));
+                        for l in text.lines() {
+                            lines.push(Line::from(Span::raw(format!("  {l}"))));
+                        }
+                        self.push(lines);
+                    }
+                    Some(f) => self.push(view::note_line(&format!(
+                        "nothing kept yet; `remember` will write to {}",
+                        f.display()
+                    ))),
+                    None => self.push(view::note_line("no home folder, so nothing is kept")),
+                }
+            }
             "/mcp" => {
                 if self.session.mcp.is_empty() {
                     self.push(view::note_line(&format!(

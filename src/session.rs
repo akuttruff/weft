@@ -23,7 +23,9 @@ use crate::lm::chat::ChatModel;
 use crate::lm::raw::RawModel;
 use crate::lm::{Endpoint, Message};
 use crate::mcp;
-use crate::tools::{Ctx, Registry, Rules};
+use crate::tools::image::SeeImage;
+use crate::tools::memory::{self, Remember};
+use crate::tools::{Ctx, Registry, Rules, Tool};
 use crate::transcript::{self, Record, Saved, Transcript};
 
 pub struct Session {
@@ -46,6 +48,8 @@ pub struct Session {
     /// How to build the scout's model again, for the helpers' own tool set.
     scout_endpoint: Endpoint,
     scout_effort: Option<crate::lm::Effort>,
+    vision_endpoint: Endpoint,
+    vision_effort: crate::lm::Effort,
     /// The worker's context window, in tokens.
     pub window: u32,
     pub ctx: Ctx,
@@ -98,14 +102,27 @@ impl Session {
                 None => Box::new(RawModel::new(endpoint(&scout_model), false)),
             }
         };
-        // One scout each, so the planner's and the worker's tool sets are independent.
-        let scout = || Box::new(Scout::new(helper())) as Box<dyn crate::tools::Tool>;
+        let vision_model = config
+            .vision
+            .model
+            .clone()
+            .unwrap_or_else(|| config.planner.model.clone());
+        // The extra tools, built afresh for each registry so the planner's and
+        // the worker's tool sets are independent.
+        let extras = || {
+            extra_tools(
+                helper(),
+                endpoint(&vision_model),
+                config.vision.effort,
+                memory::file_for(&root),
+            )
+        };
         let mut registry = Registry::builtin()
             .with_rules(config.approve.clone())
             .with_hooks(config.hooks.clone());
-        registry.extend(vec![scout()]);
+        registry.extend(extras());
         let mut planner_registry = Registry::read_only();
-        planner_registry.extend(vec![scout()]);
+        planner_registry.extend(extras());
         Self {
             planner: ChatModel::new(
                 endpoint(&config.planner.model),
@@ -125,6 +142,8 @@ impl Session {
             rules: config.approve.clone(),
             scout_endpoint: endpoint(&scout_model),
             scout_effort: config.scout.effort,
+            vision_endpoint: endpoint(&vision_model),
+            vision_effort: config.vision.effort,
             window: config.compact.window,
             scout_model,
             ctx: Ctx::new(root),
@@ -256,7 +275,7 @@ impl Session {
         let mut helpers = Registry::builtin()
             .with_rules(self.rules.clone())
             .with_hooks(self.hooks.0.clone());
-        helpers.extend(vec![self.scout()]);
+        helpers.extend(self.extras());
         for (status, server) in connected {
             self.mcp.push(status);
             if let Some(server) = server {
@@ -279,18 +298,28 @@ impl Session {
         ))]);
     }
 
-    /// A scout on the configured model.
-    fn scout(&self) -> Box<dyn crate::tools::Tool> {
-        let endpoint = Endpoint {
-            url: self.scout_endpoint.url.clone(),
-            api_token: self.scout_endpoint.api_token.clone(),
-            model: self.scout_endpoint.model.clone(),
+    /// The scout, `see_image` and `remember`, on the configured models.
+    fn extras(&self) -> Vec<Box<dyn Tool>> {
+        let copy = |e: &Endpoint| Endpoint {
+            url: e.url.clone(),
+            api_token: e.api_token.clone(),
+            model: e.model.clone(),
         };
-        let model: Box<dyn Model> = match self.scout_effort {
-            Some(effort) => Box::new(ChatModel::new(endpoint, Some(effort))),
-            None => Box::new(RawModel::new(endpoint, false)),
+        let scout_model: Box<dyn Model> = match self.scout_effort {
+            Some(effort) => Box::new(ChatModel::new(copy(&self.scout_endpoint), Some(effort))),
+            None => Box::new(RawModel::new(copy(&self.scout_endpoint), false)),
         };
-        Box::new(Scout::new(model))
+        extra_tools(
+            scout_model,
+            copy(&self.vision_endpoint),
+            self.vision_effort,
+            memory::file_for(&self.ctx.root),
+        )
+    }
+
+    /// Where `remember` writes, for `/memory`.
+    pub fn memory_file(&self) -> Option<std::path::PathBuf> {
+        memory::file_for(&self.ctx.root)
     }
 
     pub fn planner_name(&self) -> &str {
@@ -529,6 +558,26 @@ impl Session {
     pub fn depth(&self) -> usize {
         self.messages.lock().unwrap().len().saturating_sub(1)
     }
+}
+
+/// The tools beyond the built-in six: the scout, a look at images, and memory.
+fn extra_tools(
+    scout_model: Box<dyn Model>,
+    vision: Endpoint,
+    vision_effort: crate::lm::Effort,
+    memory_file: Option<std::path::PathBuf>,
+) -> Vec<Box<dyn Tool>> {
+    let mut out: Vec<Box<dyn Tool>> = vec![
+        Box::new(Scout::new(scout_model)),
+        Box::new(SeeImage {
+            endpoint: vision,
+            effort: Some(vision_effort),
+        }),
+    ];
+    if let Some(file) = memory_file {
+        out.push(Box::new(Remember { file }));
+    }
+    out
 }
 
 /// `2026-10-25T14:19:01-07:00` → `on 2026-10-25 at 14:19`.

@@ -415,20 +415,27 @@ fn with_earlier(task: &str, context: Option<&str>) -> String {
 /// an empty folder is a new project and not a mystery.
 pub fn snapshot(root: &Path) -> String {
     let global = std::env::home_dir().map(|h| h.join(".config/weft/WEFT.md"));
-    format!("{}{}", folder_note(root), notes(root, global.as_deref()))
+    let kept = crate::tools::memory::file_for(root);
+    format!(
+        "{}{}",
+        folder_note(root),
+        notes(root, global.as_deref(), kept.as_deref())
+    )
 }
 
 /// How much of a notes file the models are shown, in characters.
 const NOTES_CHARS: usize = 8_000;
 
 /// The user's standing instructions: `~/.config/weft/WEFT.md` for every
-/// project and `WEFT.md` in the folder for this one, as a `## Project notes`
-/// section. Empty when there are none.
-pub fn notes(root: &Path, global: Option<&Path>) -> String {
+/// project and `WEFT.md` in the folder for this one, then what weft itself
+/// kept with `remember`, as a `## Project notes` section. Empty when there
+/// are none.
+pub fn notes(root: &Path, global: Option<&Path>, kept: Option<&Path>) -> String {
     let mut out = String::new();
     let files = [
         ("for every project", global.map(Path::to_path_buf)),
         ("for this project", Some(root.join("WEFT.md"))),
+        ("weft kept from earlier tasks", kept.map(Path::to_path_buf)),
     ];
     for (label, path) in files {
         let Some(path) = path else { continue };
@@ -944,7 +951,7 @@ mod tests {
     #[test]
     fn notes_come_from_the_folder_and_the_global_file() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(notes(dir.path(), None), "");
+        assert_eq!(notes(dir.path(), None, None), "");
         std::fs::write(
             dir.path().join("WEFT.md"),
             "Run `cargo test` before answering.\n",
@@ -952,7 +959,12 @@ mod tests {
         .unwrap();
         let global = dir.path().join("global.md");
         std::fs::write(&global, "One-line commits.").unwrap();
-        let text = notes(dir.path(), Some(&global));
+        let kept = dir.path().join("kept.md");
+        std::fs::write(&kept, "- Tests take a minute.").unwrap();
+        let text = notes(dir.path(), Some(&global), Some(&kept));
+        assert!(
+            text.contains("weft kept from earlier tasks") && text.contains("Tests take a minute.")
+        );
         assert!(text.starts_with("## Project notes\n"), "{text}");
         let every = text.find("for every project").unwrap();
         let this = text.find("for this project").unwrap();

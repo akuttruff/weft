@@ -88,6 +88,49 @@ impl ChatModel {
     }
 }
 
+/// One question about one image, without streaming: the picture as a data
+/// URL beside the text, the way the OpenAI API takes it.
+pub async fn describe_image(
+    endpoint: &Endpoint,
+    effort: Option<Effort>,
+    data_url: &str,
+    question: &str,
+) -> Result<String, LmError> {
+    let client = reqwest::Client::new();
+    let mut body = json!({
+        "model": endpoint.model,
+        "messages": [{
+            "role": "user",
+            "content": [
+                { "type": "text", "text": question },
+                { "type": "image_url", "image_url": { "url": data_url } }
+            ]
+        }],
+        "stream": false,
+        "max_tokens": 1500,
+    });
+    if let Some(effort) = effort {
+        body["reasoning_effort"] = json!(effort.as_str());
+    }
+    let res = send(endpoint, &client, "/v1/chat/completions", &body).await?;
+    let v: Value = res
+        .json()
+        .await
+        .map_err(|e| LmError::Malformed(e.to_string()))?;
+    let text = v
+        .pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        return Err(LmError::Malformed(
+            "the model sent no text for the image".into(),
+        ));
+    }
+    Ok(text)
+}
+
 /// A message in the chat route's JSON.
 fn message_json(m: &Message) -> Value {
     match m {

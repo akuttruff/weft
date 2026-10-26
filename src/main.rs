@@ -618,7 +618,7 @@ async fn tool(config: &Config, name: String, args: Option<String>) -> Result<()>
     };
     let ctx = Ctx::new(std::env::current_dir()?);
     // The scout needs a model, so it comes from a session like the others.
-    let mut registry = if name == "scout" {
+    let mut registry = if matches!(name.as_str(), "scout" | "see_image" | "remember") {
         Session::new(config, ctx.root.clone()).registry
     } else {
         Registry::builtin()

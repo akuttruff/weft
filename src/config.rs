@@ -24,6 +24,27 @@ pub struct Config {
     /// Your commands at set moments; see `hooks`.
     #[serde(default)]
     pub hooks: Vec<Hook>,
+    #[serde(default)]
+    pub vision: Vision,
+}
+
+/// The model that looks at images for `see_image`: a vision model on the
+/// chat route. The planner's by default; your models are all vision models.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Vision {
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default = "Effort::low")]
+    pub effort: Effort,
+}
+
+impl Default for Vision {
+    fn default() -> Self {
+        Self {
+            model: None,
+            effort: Effort::Low,
+        }
+    }
 }
 
 /// When the worker's conversation is folded into a handover note.
@@ -191,5 +212,7 @@ model = "qwen3.5-122b-a10b"
         assert_eq!(config.compact.window, 65_536);
         assert!(config.approve.commands.is_empty());
         assert!(config.hooks.is_empty());
+        assert_eq!(config.vision.model, None);
+        assert_eq!(config.vision.effort, Effort::Low);
     }
 }
