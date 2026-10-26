@@ -35,8 +35,10 @@ shell commands ask first, and one key answers:
 
 ![Weft asking before an edit](docs/approval.png)
 
-Keys: enter sends · ctrl-j (or `\` + enter) for a newline · ← → home end (or
-ctrl-a, ctrl-e) move in the input · ↑↓ history · esc
+Keys: enter sends · ctrl-j (or `\` + enter) for a newline · the readline
+keys edit the input (ctrl-a / ctrl-e to the ends, ctrl-b / ctrl-f by a
+character, alt-b / alt-f by a word, ctrl-k / ctrl-u kill to the end or the
+start, ctrl-w a word, ctrl-d a character) · ↑↓ history · esc
 stops the task · y / a / n answer approvals · ctrl-c twice leaves. `/` opens a
 menu: `/plan <task>` plans first and waits for your word on the plan, `/go
 <task>` never plans, `/think`
@@ -75,9 +77,9 @@ and removes files that appeared. Your own uncommitted edits from before the
 task survive. The worker is told on its next task.
 
 **Plan mode.** A task given as `/plan <task>` stops once the plan is on the
-screen. Enter lets the worker go; typing notes and pressing enter sends the
-plan back to the planner, which writes it again with your notes in mind, up to
-three times; esc stops the task there. `confirm = "always"` in the config does
+screen. Enter, or a typed "yes", lets the worker go; "no" or esc stops the
+task there; anything else typed is notes, and the planner writes the plan
+again with them in mind, up to three times. `confirm = "always"` in the config does
 this for every plan, `"never"` for none.
 
 **The scout.** Both the planner and the worker have a `scout` tool: one

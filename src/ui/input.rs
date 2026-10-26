@@ -81,6 +81,45 @@ impl Input {
         self.cursor = self.cursor.saturating_sub(1);
     }
 
+    /// To the start of the word before the cursor (alt-b).
+    pub fn word_left(&mut self) {
+        let at = self.byte_at(self.cursor);
+        let head = self.text[..at].trim_end();
+        let start = head.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
+        self.cursor = self.text[..start].chars().count();
+    }
+
+    /// To the end of the word after the cursor (alt-f).
+    pub fn word_right(&mut self) {
+        let at = self.byte_at(self.cursor);
+        let tail = &self.text[at..];
+        let skipped = tail.len() - tail.trim_start().len();
+        let end = tail[skipped..]
+            .find(char::is_whitespace)
+            .map(|i| at + skipped + i)
+            .unwrap_or(self.text.len());
+        self.cursor = self.text[..end].chars().count();
+    }
+
+    /// Delete from the cursor to the end of the line (ctrl-k).
+    pub fn kill_to_end(&mut self) {
+        let at = self.byte_at(self.cursor);
+        let end = self.text[at..]
+            .find('\n')
+            .map(|i| at + i)
+            .unwrap_or(self.text.len());
+        self.text.replace_range(at..end, "");
+    }
+
+    /// Delete from the start of the line to the cursor (ctrl-u).
+    pub fn kill_to_start(&mut self) {
+        let at = self.byte_at(self.cursor);
+        let start = self.text[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let removed = self.text[start..at].chars().count();
+        self.text.replace_range(start..at, "");
+        self.cursor -= removed;
+    }
+
     pub fn right(&mut self) {
         self.cursor = (self.cursor + 1).min(self.len_chars());
     }
@@ -164,6 +203,29 @@ mod tests {
         input.home();
         input.insert('>');
         assert_eq!(&*input, "a\n>bc");
+    }
+
+    #[test]
+    fn readline_moves_and_kills() {
+        let mut input = Input::default();
+        input.set("one two three".into());
+        input.word_left();
+        input.word_left();
+        input.insert('>');
+        assert_eq!(&*input, "one >two three");
+        input.word_right();
+        input.insert('<');
+        assert_eq!(&*input, "one >two< three");
+        input.kill_to_end();
+        assert_eq!(&*input, "one >two<");
+        input.left();
+        input.left();
+        input.kill_to_start();
+        assert_eq!(&*input, "o<");
+        input.set("first\nsecond line".into());
+        input.word_left();
+        input.kill_to_start();
+        assert_eq!(&*input, "first\nline");
     }
 
     #[test]

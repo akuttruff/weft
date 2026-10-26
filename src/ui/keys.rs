@@ -28,11 +28,13 @@ impl App {
                 (KeyCode::Enter, false, false) => {
                     let notes = self.input.trim().to_string();
                     self.input.clear();
-                    self.answer_plan(if notes.is_empty() {
-                        PlanDecision::Go
-                    } else {
-                        PlanDecision::Revise(notes)
-                    });
+                    // A plain yes or no is an answer, not a note for the planner.
+                    let decision = match notes.to_lowercase().trim_end_matches(['.', '!']) {
+                        "" | "y" | "yes" | "ok" | "go" | "sure" => PlanDecision::Go,
+                        "n" | "no" | "stop" | "cancel" => PlanDecision::Stop,
+                        _ => PlanDecision::Revise(notes),
+                    };
+                    self.answer_plan(decision);
                     return;
                 }
                 (KeyCode::Esc, _, _) | (KeyCode::Char('c'), true, _) => {
@@ -86,6 +88,7 @@ impl App {
                 }
             }
             (KeyCode::Char('d'), true) if self.input.is_empty() => self.quit = true,
+            (KeyCode::Char('d'), true) => self.input.delete(),
             (KeyCode::Esc, _) => {
                 if self.running.is_some() {
                     self.stop();
@@ -113,7 +116,16 @@ impl App {
                 self.input.backspace();
                 self.history_at = None;
             }
-            (KeyCode::Char('u'), true) => self.input.clear(),
+            (KeyCode::Char('u'), true) => self.input.kill_to_start(),
+            (KeyCode::Char('k'), true) => self.input.kill_to_end(),
+            (KeyCode::Char('b'), true) => self.input.left(),
+            (KeyCode::Char('f'), true) => self.input.right(),
+            (KeyCode::Char('b'), false) if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.input.word_left()
+            }
+            (KeyCode::Char('f'), false) if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.input.word_right()
+            }
             (KeyCode::Char('w'), true) => self.input.delete_word(),
             (KeyCode::Left, _) => self.input.left(),
             (KeyCode::Right, _) => self.input.right(),

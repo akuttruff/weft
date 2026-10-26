@@ -144,7 +144,7 @@ impl App {
                         ),
                     ]));
                 }
-                lines.push(Line::from(Span::styled("  enter sends · ctrl-j or \\ + enter for a newline · ← → home end move · ↑↓ history · esc stops a task · y/a/n answer approvals · ctrl-c twice leaves", Style::new().dim())));
+                lines.push(Line::from(Span::styled("  enter sends · ctrl-j or \\ + enter for a newline · readline keys edit (ctrl-a/e/b/f/k/u/w/d, alt-b/f) · ↑↓ history · esc stops a task · y/a/n answer approvals · ctrl-c twice leaves", Style::new().dim())));
                 self.push(lines);
             }
             "/plan" | "/go" if rest.is_empty() => {

@@ -93,6 +93,18 @@ fn a_plan_goes_on_enter_revises_on_notes_and_stops_on_esc() {
     app.on_msg(UiMsg::AskPlan { reply });
     key(&mut app, &tx, KeyCode::Esc);
     assert_eq!(answer.blocking_recv().unwrap(), PlanDecision::Stop);
+
+    // A typed yes or no is an answer, not notes.
+    let (reply, answer) = oneshot::channel();
+    app.on_msg(UiMsg::AskPlan { reply });
+    type_text(&mut app, &tx, "Yes");
+    key(&mut app, &tx, KeyCode::Enter);
+    assert_eq!(answer.blocking_recv().unwrap(), PlanDecision::Go);
+    let (reply, answer) = oneshot::channel();
+    app.on_msg(UiMsg::AskPlan { reply });
+    type_text(&mut app, &tx, "no");
+    key(&mut app, &tx, KeyCode::Enter);
+    assert_eq!(answer.blocking_recv().unwrap(), PlanDecision::Stop);
     assert!(pending(&app).contains("plan: revise · skip the tests"));
 }
 
@@ -129,6 +141,24 @@ fn accept_toggles_and_shows_in_the_footer() {
     type_text(&mut app, &tx, "/accept");
     key(&mut app, &tx, KeyCode::Enter);
     assert!(!app.accept_edits);
+}
+
+#[test]
+fn readline_keys_edit_the_input() {
+    let (mut app, tx, _rx) = app();
+    type_text(&mut app, &tx, "fix the tests");
+    let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+    let alt = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT);
+    app.on_key(alt('b'), &tx);
+    app.on_key(ctrl('k'), &tx);
+    assert_eq!(&*app.input, "fix the ");
+    app.on_key(ctrl('a'), &tx);
+    app.on_key(ctrl('f'), &tx);
+    app.on_key(ctrl('d'), &tx);
+    assert_eq!(&*app.input, "fx the ");
+    app.on_key(ctrl('e'), &tx);
+    app.on_key(ctrl('u'), &tx);
+    assert!(app.input.is_empty() && !app.quit);
 }
 
 #[test]
