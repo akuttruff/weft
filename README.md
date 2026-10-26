@@ -36,10 +36,9 @@ shell commands ask first, and one key answers:
 ![Weft asking before an edit](docs/approval.png)
 
 Keys: enter sends · shift-tab cycles how much weft asks (ask → edits auto →
-all auto → plan first) · ctrl-j (or `\` + enter) for a newline · the readline
-keys edit the input (ctrl-a / ctrl-e to the ends, ctrl-b / ctrl-f by a
-character, alt-b / alt-f by a word, ctrl-k / ctrl-u kill to the end or the
-start, ctrl-w a word, ctrl-d a character) · ↑↓ history · esc
+all auto → plan first) · ctrl-j (or `\` + enter) for a newline · the input
+box takes the Emacs-style editing keys Readline gives your shell · ↑↓ history
+· esc
 stops the task · y / a / n answer approvals · ctrl-c twice leaves. `/` opens a
 menu: `/plan <task>` plans first and waits for your word on the plan, `/go
 <task>` never plans, `/think`
