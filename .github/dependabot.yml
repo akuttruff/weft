@@ -10,3 +10,13 @@ updates:
       security:
         applies-to: security-updates
         patterns: ["*"]
+  # Security fixes only, gathered into one PR; routine version bumps stay off.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
