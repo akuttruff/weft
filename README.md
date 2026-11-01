@@ -303,7 +303,9 @@ The worker runs on the raw completions route, which carries no images, so
 `see_image` sends a picture to a vision model on the chat route and brings
 the words back: a description, or the answer to a question about it. Your
 models are all vision models; the planner's is used unless `[vision]` names
-another. Point the worker at a screenshot in the task text and it will look.
+another. Point the worker at a screenshot in the task text, or drop one on
+the terminal, and it will look: `see_image` reads a picture by its full path
+wherever it is.
 
 ## Command line
 
@@ -323,7 +325,8 @@ weft tool search '{"pattern":"fn main","glob":"*.rs"}'   # run one tool by hand
 ```
 
 Every path is resolved against the project root and refused outside it,
-symlinks included. `pkill`, `killall` and force pushes are never run.
+symlinks included; the one exception is a picture `see_image` is given by its
+full path. `pkill`, `killall` and force pushes are never run.
 
 ## The worker's tools
 

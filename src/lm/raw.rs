@@ -294,16 +294,51 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// The stream has ended: whatever is held back is text (or reasoning).
+    /// The stream has ended: whatever is held back is text (or reasoning), or
+    /// a call the model left unclosed.
     pub fn finish(&mut self) -> Vec<StreamEvent> {
         let rest = std::mem::take(&mut self.buf);
         let mut out = Vec::new();
         if self.in_reasoning {
             push_text(&mut out, StreamEvent::Reasoning, rest);
-        } else {
-            push_text(&mut out, StreamEvent::Text, rest.trim_end().to_string());
+            return out;
         }
+        // The model often ends its turn before `</tool_call>`, sometimes before
+        // `</function>` too. Read as text, the call never runs and the task
+        // ends mid-step; with every parameter closed it is whole, so run it.
+        if let Some(start) = rest.find(CALL_START) {
+            let inner = &rest[start + CALL_START.len()..];
+            if unclosed_call_is_whole(inner)
+                && let Some(call) = parse_call(inner, self.tools, self.next_id)
+            {
+                push_text(
+                    &mut out,
+                    StreamEvent::Text,
+                    rest[..start].trim_end().to_string(),
+                );
+                self.next_id += 1;
+                out.push(StreamEvent::ToolCall(call));
+                return out;
+            }
+        }
+        push_text(&mut out, StreamEvent::Text, rest.trim_end().to_string());
         out
+    }
+}
+
+/// An unclosed call names its function and closes every parameter it opens.
+/// One cut off inside a value (out of tokens) is not run: half a command is
+/// worse than none.
+fn unclosed_call_is_whole(inner: &str) -> bool {
+    let Some(f) = inner.find("<function=") else {
+        return false;
+    };
+    if !inner[f..].contains('>') {
+        return false;
+    }
+    match inner.rfind("<parameter=") {
+        Some(p) => inner[p..].contains("</parameter>"),
+        None => true,
     }
 }
 
@@ -553,6 +588,45 @@ mod tests {
                 StreamEvent::Text("Earth".into()),
                 StreamEvent::Text("\nis round".into()),
             ]
+        );
+    }
+
+    #[test]
+    fn a_call_left_unclosed_at_the_end_still_runs() {
+        let tools = tools();
+        // As the worker sent it: no `</tool_call>`, then no `</function>` either.
+        for tail in ["</function>", ""] {
+            let mut p = Parser::new(false, &tools);
+            let mut events = p.push(&format!(
+                "Let me look:\n\n<tool_call>\n<function=read_file>\n<parameter=path>\na.ts\n</parameter>\n{tail}"
+            ));
+            events.extend(p.finish());
+            assert_eq!(
+                events,
+                vec![
+                    StreamEvent::Text("Let me look:\n\n".into()),
+                    StreamEvent::ToolCall(ToolCall {
+                        id: "call_1".into(),
+                        name: "read_file".into(),
+                        arguments: json!({"path": "a.ts"})
+                    }),
+                ],
+                "tail {tail:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_call_cut_off_inside_a_value_stays_text() {
+        let tools = tools();
+        let mut p = Parser::new(false, &tools);
+        let mut events = p.push("<tool_call>\n<function=read_file>\n<parameter=path>\na.");
+        events.extend(p.finish());
+        assert_eq!(
+            events,
+            vec![StreamEvent::Text(
+                "<tool_call>\n<function=read_file>\n<parameter=path>\na.".into()
+            )]
         );
     }
 

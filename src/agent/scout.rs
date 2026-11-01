@@ -115,6 +115,9 @@ impl Tool for Scout {
                 "the scout looked {n} times without reaching an answer; ask something narrower or search yourself"
             ))),
             Err(WorkerError::Model(e)) => Err(ToolError::Failed(format!("the scout's model: {e}"))),
+            Err(WorkerError::EmptyReply) => Err(ToolError::Failed(
+                "the scout's model sent back nothing; search yourself".into(),
+            )),
             Err(e @ WorkerError::ContextFull(_)) => {
                 Err(ToolError::Failed(format!("the scout ran out of room: {e}")))
             }

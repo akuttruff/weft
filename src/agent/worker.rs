@@ -38,6 +38,19 @@ pub enum WorkerError {
         "the conversation no longer fits the model's window ({0} tokens); what was done so far is kept; /compact or /clear, then carry on"
     )]
     ContextFull(u32),
+    #[error(
+        "the model sent back nothing, {} times; is it loaded? What was done so far is kept; say \"continue\" to go on",
+        EMPTY_RETRIES + 1
+    )]
+    EmptyReply,
+}
+
+/// Times an empty reply is asked again before the task stops.
+const EMPTY_RETRIES: usize = 2;
+
+/// No text and no call: nothing to act on or report.
+fn is_empty(reply: &crate::lm::Reply) -> bool {
+    reply.tool_calls.is_empty() && reply.content.trim().is_empty()
 }
 
 /// What a finished run amounts to.
@@ -152,7 +165,23 @@ impl Worker<'_> {
                 tools: tools.clone(),
                 max_tokens: MAX_TOKENS,
             };
-            let reply = self.turn(&req).await?;
+            let mut reply = self.turn(&req).await?;
+            // Nothing at all back (a model still loading, a stream that closed
+            // early) is a hiccup, not an answer: ask again before giving up.
+            for _ in 0..EMPTY_RETRIES {
+                if !is_empty(&reply) {
+                    break;
+                }
+                self.emit(AgentEvent::Note {
+                    text: "the model sent nothing back; asking again".into(),
+                })
+                .await;
+                outcome.usage = add(outcome.usage, reply.usage);
+                reply = self.turn(&req).await?;
+            }
+            if is_empty(&reply) {
+                return Err(WorkerError::EmptyReply);
+            }
             outcome.usage = add(outcome.usage, reply.usage);
             outcome.rounds = round;
             messages.push(reply.message());
@@ -552,6 +581,41 @@ mod tests {
                 "start", "text", "end", "tool", "ok", "tool", "ok", "start", "text", "end"
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn an_empty_reply_is_asked_again_then_stops_the_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(dir.path().to_path_buf());
+        let registry = Registry::builtin();
+        let model = Scripted {
+            replies: Mutex::new(vec![
+                Reply::default(),
+                Reply {
+                    content: "Done.".into(),
+                    ..Default::default()
+                },
+            ]),
+            seen: Mutex::new(vec![]),
+        };
+        let (events, _rx) = mpsc::channel(64);
+        let mut worker = Worker::new(&model, &registry, &ctx, &Yes, events).window(0);
+        let mut messages = vec![Message::User("go".into())];
+        let out = worker.run(&mut messages).await.unwrap();
+        assert_eq!(out.answer, "Done.");
+        assert_eq!(messages.len(), 2, "the empty reply was not kept");
+
+        let model = Scripted {
+            replies: Mutex::new(vec![Reply::default(); EMPTY_RETRIES + 1]),
+            seen: Mutex::new(vec![]),
+        };
+        let (events, _rx) = mpsc::channel(64);
+        let mut worker = Worker::new(&model, &registry, &ctx, &Yes, events).window(0);
+        let err = worker
+            .run(&mut vec![Message::User("go".into())])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, WorkerError::EmptyReply), "{err}");
     }
 
     #[tokio::test]

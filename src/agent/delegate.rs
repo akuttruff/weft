@@ -120,6 +120,9 @@ impl Tool for Delegate {
             Err(WorkerError::Model(e)) => {
                 Err(ToolError::Failed(format!("the helper's model: {e}")))
             }
+            Err(WorkerError::EmptyReply) => Err(ToolError::Failed(
+                "the helper's model sent back nothing; do the piece yourself".into(),
+            )),
         }
     }
 }

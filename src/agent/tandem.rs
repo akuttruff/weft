@@ -88,6 +88,7 @@ impl Tandem<'_> {
         // conversation, so "now add a test for that" needs the earlier exchange.
         let earlier = earlier(messages);
         let project = snapshot(&self.ctx.root);
+        let git_before = git_changes(&self.ctx.root).await;
 
         // 1. Plan, if this task warrants one.
         let context = format!("{project}{}", earlier.as_deref().unwrap_or(""));
@@ -220,6 +221,13 @@ impl Tandem<'_> {
                 if !out.touched.contains(&f) {
                     out.touched.push(f);
                 }
+            }
+        }
+        // So do changes made through bash (an `rm`, a formatter): whatever git
+        // shows changed now that it did not before the task.
+        for f in changed_since(&git_before, &git_changes(&self.ctx.root).await) {
+            if !out.touched.contains(&f) {
+                out.touched.push(f);
             }
         }
         let mut round = 0;
@@ -628,6 +636,39 @@ pub async fn diff_of(root: &Path, paths: &[String]) -> String {
     } else {
         out
     }
+}
+
+/// `git status` entries (`XY path`), one per changed file. Empty outside git.
+pub async fn git_changes(root: &Path) -> HashSet<String> {
+    let git = tokio::process::Command::new("git")
+        .args([
+            "status",
+            "--porcelain",
+            "-z",
+            "--no-renames",
+            "--untracked-files=all",
+        ])
+        .current_dir(root)
+        .output()
+        .await;
+    match git {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .split('\0')
+            .filter(|e| e.len() > 3)
+            .map(str::to_string)
+            .collect(),
+        _ => HashSet::new(),
+    }
+}
+
+/// The paths whose `git status` entry is new since `before`, sorted.
+fn changed_since(before: &HashSet<String>, after: &HashSet<String>) -> Vec<String> {
+    let mut paths: Vec<String> = after
+        .difference(before)
+        .map(|e| e[3..].to_string())
+        .collect();
+    paths.sort();
+    paths
 }
 
 fn add(a: Usage, b: Usage) -> Usage {
@@ -1101,6 +1142,43 @@ mod tests {
             verdict("Looks fine to me."),
             (true, "Looks fine to me.".into())
         );
+    }
+
+    #[tokio::test]
+    async fn a_file_removed_through_bash_reaches_the_reviewer() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q"]);
+        std::fs::write(root.join("old.tsx"), "gone soon\n").unwrap();
+        std::fs::write(root.join("dirty.ts"), "a\n").unwrap();
+        git(&["add", "."]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "--no-verify",
+            "-qm",
+            "test: start",
+        ]);
+        std::fs::write(root.join("dirty.ts"), "b\n").unwrap();
+        let before = git_changes(root).await;
+        std::fs::remove_file(root.join("old.tsx")).unwrap();
+        let changed = changed_since(&before, &git_changes(root).await);
+        assert_eq!(
+            changed,
+            ["old.tsx"],
+            "dirty before the task is not the task's"
+        );
+        assert!(diff_of(root, &changed).await.contains("-gone soon"));
     }
 
     #[tokio::test]
