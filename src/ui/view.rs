@@ -120,7 +120,7 @@ pub fn replay_lines(saved: &Saved) -> Vec<Line<'static>> {
             lines.extend(user_line(task));
         }
         lines.extend(note_line("  the plan from last time:"));
-        lines.extend(plan_lines(plan));
+        lines.extend(plan_view(plan));
     }
     if saved.todos.iter().any(Todo::is_open) {
         lines.extend(todo_lines(&saved.todos));
@@ -332,15 +332,46 @@ pub fn plan_lines(text: &str) -> Vec<Line<'static>> {
     // Code fences carry nothing on a terminal; the code between them stays.
     for l in text.lines().filter(|l| !l.trim_start().starts_with("```")) {
         let mut spans = vec![Span::styled("  │ ", Style::new().fg(Color::Cyan))];
-        spans.extend(inline(
-            l,
-            if l.starts_with("## ") {
-                Style::new().bold()
-            } else {
-                Style::new()
-            },
-        ));
+        let style = if l.starts_with("## ") {
+            Style::new().bold()
+        } else if l.contains('⚠') {
+            // A choice that departs from what was asked: the line to read.
+            Style::new().fg(Color::Yellow)
+        } else {
+            Style::new()
+        };
+        spans.extend(inline(l, style));
         out.push(Line::from(spans));
+    }
+    out
+}
+
+/// A plan as the person reads it: their part whole, the worker's folded
+/// to one line that `/steps` opens.
+pub fn plan_view(text: &str) -> Vec<Line<'static>> {
+    let (mine, worker) = crate::agent::tandem::split_plan(text);
+    let mut out = plan_lines(mine);
+    if let Some(worker) = worker {
+        let steps = worker
+            .lines()
+            .skip(1)
+            .take_while(|l| !l.starts_with("## "))
+            .filter(|l| {
+                let t = l.trim_start();
+                let rest = t.trim_start_matches(|c: char| c.is_ascii_digit());
+                rest.len() < t.len() && (rest.starts_with('.') || rest.starts_with(')'))
+            })
+            .count();
+        out.push(Line::from(vec![
+            Span::styled("  │ ", Style::new().fg(Color::Cyan)),
+            Span::styled(
+                format!(
+                    "── {steps} step{} for the worker, with its checks and pitfalls · /steps shows them",
+                    if steps == 1 { "" } else { "s" }
+                ),
+                Style::new().dim(),
+            ),
+        ]));
     }
     out
 }
@@ -529,6 +560,31 @@ mod tests {
                 .add_modifier
                 .contains(Modifier::BOLD)
         );
+    }
+
+    #[test]
+    fn a_plan_shows_the_persons_part_and_folds_the_workers() {
+        let plan = "## What you asked for\nAdd Pilates to the plan.\n\n## Choices to confirm\n- ⚠ Logging it on the Workouts card, not adding a session.\n\n## Steps\n1. `a.rs`: x\n2. `b.rs`: y\n\n## Verify\ncargo test";
+        let lines = plan_view(plan);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(
+            !text.iter().any(|t| t.contains("a.rs")),
+            "the worker's steps are folded: {text:?}"
+        );
+        assert_eq!(
+            text.last().unwrap(),
+            "  │ ── 2 steps for the worker, with its checks and pitfalls · /steps shows them"
+        );
+        let warn = lines
+            .iter()
+            .find(|l| l.spans.iter().any(|s| s.content.contains('⚠')))
+            .unwrap();
+        assert_eq!(warn.spans[1].style.fg, Some(Color::Yellow));
+        // A plan in the old shape shows whole, with nothing folded.
+        assert_eq!(plan_view("## Plan\n1. x").len(), 2);
     }
 
     #[test]

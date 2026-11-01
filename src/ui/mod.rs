@@ -73,6 +73,7 @@ const COMMANDS: &[(&str, &str, bool)] = &[
     ("/compact", "fold earlier tasks into a note", false),
     ("/undo", "put back the files the last task changed", false),
     ("/resume", "pick up an earlier session", true),
+    ("/steps", "the worker's steps of the last plan", false),
     (
         "/todos",
         "the worker's checklist; /todos clear empties it",
@@ -244,6 +245,8 @@ struct App {
     picking_session: bool,
     /// The worker's checklist as last heard, for the status line and `/todos`.
     todos: Vec<Todo>,
+    /// The last plan, whole, for `/steps`.
+    plan: Option<String>,
     /// What has been written above the live area lately, kept to be wrapped
     /// again when the terminal changes width.
     shown: std::collections::VecDeque<(Vec<Line<'static>>, Vec<Span<'static>>)>,
@@ -417,6 +420,7 @@ impl App {
             sessions: Vec::new(),
             picking_session: false,
             todos: Vec::new(),
+            plan: None,
             shown: std::collections::VecDeque::new(),
             resized: None,
             laid_out: None,

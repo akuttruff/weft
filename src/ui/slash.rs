@@ -109,6 +109,20 @@ impl App {
                 view::k(self.context),
                 view::k(self.session.window),
             ))),
+            "/steps" => {
+                let worker = self
+                    .plan
+                    .as_deref()
+                    .and_then(|p| crate::agent::tandem::split_plan(p).1)
+                    .map(str::to_string);
+                match worker {
+                    Some(w) => {
+                        let lines = view::plan_lines(&w);
+                        self.push_with(lines, vec![Span::styled("  │ ", Style::new().fg(Color::Cyan))]);
+                    }
+                    None => self.push(view::note_line("no plan with worker's steps yet")),
+                }
+            }
             "/todos" if rest == "clear" => {
                 if self.running.is_some() {
                     self.push(view::note_line("a task is running; esc stops it"));
@@ -271,6 +285,7 @@ impl App {
         self.context = saved.context;
         self.tasks = saved.tasks.len();
         self.todos = saved.todos.clone();
+        self.plan = saved.last_plan.clone();
         self.push(view::replay_lines(&saved));
     }
 

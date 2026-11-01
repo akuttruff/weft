@@ -63,6 +63,7 @@ a word, and so on.
 | `/resume` | lists this folder's earlier sessions; a number, or `/resume 2`, picks one up |
 | `/restart` | leaves and comes straight back to this session, on the installed build |
 | `/think` | toggles the worker's thinking |
+| `/steps` | the worker's steps of the last plan, folded on the screen |
 | `/todos` | the worker's checklist; `/todos clear` empties it |
 | `/memory` | what weft has kept about this project |
 | `/cost` | tokens used this session |
@@ -78,10 +79,17 @@ a word, and so on.
    plan. A question or a one-spot change goes straight to work; anything wider
    is planned first. `/plan <task>` and `/go <task>` override it.
 3. **Plan.** The planner looks at the code with read-only tools, or asks the
-   scout, then writes a short plan: the files and changes (naming the helpers
-   nearby code already uses), a `## Done when` list of what must work as the
-   user would try it, the one command that verifies, and the pitfalls it
-   noticed. Out of look-arounds, it is asked for the plan from what it has.
+   scout, then writes a plan in two parts. The first is for you, in the app's
+   terms with no file names: what you asked for, in your words; what will
+   change for you; **choices to confirm**, where it read the request one way
+   of several or did something other than what you named (marked ⚠); how
+   the pieces fit together; and `## Done when`, what must work as you would
+   try it. The second, from `## Steps`, is for the worker: the files and
+   changes (naming the helpers nearby code already uses), the command that
+   verifies, and the pitfalls. A plan that skips the first part is asked for
+   again, once; out of look-arounds, the planner writes from what it has.
+   The screen shows your part and folds the worker's to one line; `/steps`
+   opens it.
 4. **Work.** The plan's steps become the worker's checklist, shown as it
    goes (`☒` done, `◼` under way, `☐` not started); the status line names the
    step under way and the tool running now. The worker follows the plan with
@@ -119,12 +127,13 @@ When a round is done, its reads and edits are folded into a short note and
 the next round begins from that, so a big ask no longer piles up in one
 window. The review comes once at the end.
 
-**Plan mode.** A task given as `/plan <task>` stops once the plan is on the
-screen. Enter, or a typed "yes", lets the worker go; "no" or esc stops the
-task there; anything else you type is notes, and the planner writes the plan
-again with them in mind, up to three times. A line starting with `/` runs as
-a command and the plan keeps waiting. `confirm = "always"` in the config does
-this for every plan.
+**Every plan waits for your word.** Once the plan is on the screen, enter, or
+a typed "yes", lets the worker go; "no" or esc stops the task there; anything
+else you type is notes, and the planner writes the plan again with them in
+mind, up to three times. A line starting with `/` runs as a command (`/steps`,
+say) and the plan keeps waiting. A task given as `/go <task>` and the all-auto
+mode go straight on, as does `weft run` with no terminal to ask;
+`confirm = "never"` in the config goes straight on always.
 
 **Undo.** `/undo` puts back the files the last task changed, and the task
 before that on a second `/undo`. Weft's own edits and new files are always
@@ -185,7 +194,7 @@ model = "qwen/qwen3.8-27b"
 plan_effort = "medium"      # low | medium | xhigh
 review_effort = "low"       # the review is one read of the diff; low is 3x faster than medium
 when = "auto"               # auto | always | never
-confirm = "asked"           # the plan waits for your word: asked (/plan only) | always | never
+confirm = "asked"           # the plan waits for your word: asked (all but /go) | always | never
 review_rounds = 1           # 0 turns review off
 
 [worker]

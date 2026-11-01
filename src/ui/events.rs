@@ -147,10 +147,13 @@ impl App {
                 self.push_with(view::todo_lines(&items), vec![Span::raw("      ")]);
                 self.todos = items;
             }
-            AgentEvent::Plan { text } => self.push_with(
-                view::plan_lines(&text),
-                vec![Span::styled("  │ ", Style::new().fg(Color::Cyan))],
-            ),
+            AgentEvent::Plan { text } => {
+                self.push_with(
+                    view::plan_view(&text),
+                    vec![Span::styled("  │ ", Style::new().fg(Color::Cyan))],
+                );
+                self.plan = Some(text);
+            }
             AgentEvent::Review { approved, text } => self.push(view::review_lines(approved, &text)),
             AgentEvent::Hook { ok, text } => {
                 self.flush_text();

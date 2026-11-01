@@ -142,8 +142,8 @@ pub struct Planner {
     pub confirm: Confirm,
 }
 
-/// `asked`: only a `/plan` task pauses on its plan. `always`: every plan
-/// does. `never`: the worker always starts at once.
+/// `asked`: every plan pauses for a word (all-auto answers it at once).
+/// `always`: the same. `never`: the worker always starts at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Confirm {

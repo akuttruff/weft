@@ -143,6 +143,21 @@ impl Tandem<'_> {
                 ];
                 let mut plan = planner.run(&mut convo).await?;
                 out.planner_usage = add(out.planner_usage, plan.usage);
+                // The person decides from the plan's first part: one that
+                // skipped it is asked for again, once.
+                let missing = missing_sections(&plan.answer);
+                if !missing.is_empty() {
+                    self.emit(AgentEvent::Note {
+                        text: format!(
+                            "the plan left out {}; asking for it again",
+                            missing.join(", ")
+                        ),
+                    })
+                    .await;
+                    convo.push(Message::User(prompts::plan_reshape(&missing)));
+                    plan = planner.run(&mut convo).await?;
+                    out.planner_usage = add(out.planner_usage, plan.usage);
+                }
                 self.emit(AgentEvent::Plan {
                     text: plan.answer.clone(),
                 })
@@ -153,7 +168,9 @@ impl Tandem<'_> {
                 let pause = match self.confirm {
                     Confirm::Always => true,
                     Confirm::Never => false,
-                    Confirm::Asked => mode == Mode::Plan,
+                    // Every plan waits for a word unless the task said go
+                    // (`/go`); all-auto answers it at once.
+                    Confirm::Asked => mode != Mode::Go,
                 };
                 let mut revisions = 0;
                 if pause {
@@ -589,13 +606,43 @@ pub fn steps_of(plan: &str) -> Vec<String> {
     numbered(section(plan, "## Tasks"))
 }
 
-/// The checklist a plan makes: its tasks when it has some, else the steps
-/// of the plan itself, then a test for each `## Done when` line, each cut
-/// to a line.
+/// The sections a plan must have: the person's part, and the worker's steps.
+const PLAN_SECTIONS: [&str; 6] = [
+    "## What you asked for",
+    "## What will change for you",
+    "## Choices to confirm",
+    "## How it fits together",
+    "## Done when",
+    "## Steps",
+];
+
+/// The sections `plan` leaves out, by heading.
+pub fn missing_sections(plan: &str) -> Vec<&'static str> {
+    PLAN_SECTIONS
+        .into_iter()
+        .filter(|h| !plan.lines().any(|l| l.trim_end() == *h))
+        .collect()
+}
+
+/// A plan in its two parts: the person's (what will change, the choices,
+/// how it fits, when it's done) and the worker's, from `## Steps` on.
+/// A plan without `## Steps` is all the person's.
+pub fn split_plan(plan: &str) -> (&str, Option<&str>) {
+    match plan.find("\n## Steps") {
+        Some(at) => (plan[..at].trim_end(), Some(plan[at + 1..].trim())),
+        None => (plan.trim_end(), None),
+    }
+}
+
+/// The checklist a plan makes: its tasks when it has some, else its steps
+/// (`## Plan` in plans written before the two-part shape), then a test for
+/// each `## Done when` line, each cut to a line.
 pub fn plan_items(plan: &str) -> Vec<String> {
     let tasks = steps_of(plan);
     let mut items = if tasks.len() >= 2 {
         tasks
+    } else if plan.contains("## Steps") {
+        numbered(section(plan, "## Steps"))
     } else {
         numbered(section(plan, "## Plan"))
     };
@@ -1010,6 +1057,13 @@ mod tests {
         }
     }
 
+    /// A plan in the two-part shape, with `steps` under `## Steps`.
+    fn shaped(steps: &str) -> String {
+        format!(
+            "## What you asked for\nMake it so.\n\n## What will change for you\n- It is so.\n\n## Choices to confirm\nNone\n\n## How it fits together\n- One file.\n\n## Done when\nIt reads as asked.\n\n## Steps\n{steps}"
+        )
+    }
+
     fn edit(path: &str, old: &str, new: &str) -> ToolCall {
         ToolCall {
             id: "c".into(),
@@ -1028,9 +1082,9 @@ mod tests {
 
         let planner = Scripted::new(
             "planner",
-            vec![Scripted::text(
-                "## Plan\n1. `a.txt`: say two\n\n## Verify\ncat a.txt",
-            )],
+            vec![Scripted::text(&shaped(
+                "1. `a.txt`: say two\n\n## Verify\ncat a.txt",
+            ))],
         );
         let reviewer = Scripted::new(
             "reviewer",
@@ -1089,7 +1143,12 @@ mod tests {
             .unwrap();
         drop(tandem);
 
-        assert!(out.plan.as_deref().unwrap().starts_with("## Plan"));
+        assert!(
+            out.plan
+                .as_deref()
+                .unwrap()
+                .starts_with("## What you asked for")
+        );
         assert_eq!(out.answer, "Changed to three.");
         assert_eq!(
             out.reviews,
@@ -1130,7 +1189,7 @@ mod tests {
         assert!(
             seen[1].starts_with("## Project\n")
                 && seen[1].contains("make it two\n\n")
-                && seen[1].contains("## Plan"),
+                && seen[1].contains("## Steps"),
             "{}",
             seen[1]
         );
@@ -1208,7 +1267,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = Ctx::new(dir.path().to_path_buf());
         let registry = Registry::builtin();
-        let planner = Scripted::new("planner", vec![Scripted::text("## Plan\n1. add a test")]);
+        let planner = Scripted::new("planner", vec![Scripted::text(&shaped("1. add a test"))]);
         let reviewer = Scripted::new("reviewer", vec![]);
         // The step is left open, so the worker is asked once more; a round
         // that changes nothing ends the asking.
@@ -1486,6 +1545,87 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_splits_into_the_persons_part_and_the_workers() {
+        let plan = shaped("1. `a.rs`: x\n\n## Verify\ncargo test");
+        let (mine, worker) = split_plan(&plan);
+        assert!(
+            mine.starts_with("## What you asked for") && mine.ends_with("It reads as asked."),
+            "{mine}"
+        );
+        assert_eq!(
+            worker,
+            Some("## Steps\n1. `a.rs`: x\n\n## Verify\ncargo test")
+        );
+        assert!(missing_sections(&plan).is_empty());
+        assert_eq!(
+            split_plan("## Plan\n1. old shape"),
+            ("## Plan\n1. old shape", None)
+        );
+        assert_eq!(
+            missing_sections("## What you asked for\nx\n\n## Steps\n1. y"),
+            [
+                "## What will change for you",
+                "## Choices to confirm",
+                "## How it fits together",
+                "## Done when"
+            ]
+        );
+        assert_eq!(plan_items(&plan), ["`a.rs`: x"]);
+    }
+
+    #[tokio::test]
+    async fn a_plan_missing_the_persons_part_is_asked_for_again_and_every_plan_waits() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(dir.path().to_path_buf());
+        let registry = Registry::builtin();
+        let planner = Scripted::new(
+            "planner",
+            vec![
+                Scripted::text("## Plan\n1. `a.rs`: do it"),
+                Scripted::text(&shaped("1. `a.rs`: do it")),
+            ],
+        );
+        let worker = Scripted::new("worker", vec![Scripted::text("PLAN")]);
+        let (events, _rx) = mpsc::channel(64);
+        // Triage asked for the plan (no /plan), and it still waits for a word.
+        let approver = PlanScript(Mutex::new(vec![PlanDecision::Stop]));
+        let mut tandem = Tandem {
+            planner: &planner,
+            reviewer: &planner,
+            worker: &worker,
+            worker_thinking: &worker,
+            registry: &registry,
+            planner_registry: &registry,
+            ctx: &ctx,
+            approver: &approver,
+            events,
+            cancel: CancellationToken::new(),
+            allowed: HashSet::new(),
+            when: PlanWhen::Auto,
+            review_rounds: 1,
+            confirm: Confirm::Asked,
+            lead: String::new(),
+            window: crate::config::DEFAULT_WINDOW,
+            digest: None,
+        };
+        let mut messages = vec![Message::System("sys".into())];
+        let out = tandem
+            .run("do it", Mode::Auto, &mut messages)
+            .await
+            .unwrap();
+        assert_eq!(out.answer, "Stopped at the plan.");
+        assert_eq!(out.plan, Some(shaped("1. `a.rs`: do it")));
+        let seen = planner.seen.lock().unwrap().clone();
+        assert!(
+            seen[1].starts_with(
+                "Your plan left out ## What you asked for, ## What will change for you"
+            ),
+            "{}",
+            seen[1]
+        );
+    }
+
+    #[test]
     fn the_checklist_comes_from_the_tasks_or_else_the_plan() {
         assert_eq!(
             plan_items("## Plan\n1. `a.rs`: x\n2. `b.rs`: y\n\n## Verify\ncargo test"),
@@ -1575,9 +1715,9 @@ mod tests {
         let registry = Registry::builtin();
         let planner = Scripted::new(
             "planner",
-            vec![Scripted::text(
-                "## Plan\n1. do things\n\n## Verify\ntrue\n\n## Tasks\n1. First piece.\n2. Second piece.\n3. Third piece.",
-            )],
+            vec![Scripted::text(&shaped(
+                "1. do things\n\n## Verify\ntrue\n\n## Tasks\n1. First piece.\n2. Second piece.\n3. Third piece.",
+            ))],
         );
         let worker = Scripted::new(
             "worker",
@@ -1747,8 +1887,8 @@ mod tests {
         let planner = Scripted::new(
             "planner",
             vec![
-                Scripted::text("## Plan\n1. first draft"),
-                Scripted::text("## Plan\n1. second draft"),
+                Scripted::text(&shaped("1. first draft")),
+                Scripted::text(&shaped("1. second draft")),
             ],
         );
         let worker = Scripted::new("worker", vec![]); // never asked
@@ -1782,7 +1922,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.answer, "Stopped at the plan.");
-        assert_eq!(out.plan.as_deref(), Some("## Plan\n1. second draft"));
+        assert_eq!(out.plan, Some(shaped("1. second draft")));
         let seen = planner.seen.lock().unwrap().clone();
         assert!(seen[1].contains("skip the tests"), "{}", seen[1]);
         assert_eq!(

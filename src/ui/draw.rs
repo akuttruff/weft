@@ -94,7 +94,7 @@ impl App {
                 Span::styled("? ", Style::new().fg(Color::Yellow).bold()),
                 Span::styled("Follow this plan?  ", Style::new().fg(Color::Yellow)),
                 Span::styled(
-                    "enter to go · type notes + enter to revise · esc to stop",
+                    "enter to go · type notes + enter to revise · /steps · esc to stop",
                     Style::new().dim(),
                 ),
             ]);

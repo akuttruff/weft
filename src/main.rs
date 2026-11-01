@@ -526,6 +526,11 @@ impl Approver for Terminal {
     }
 
     async fn review_plan(&self, _plan: &str) -> PlanDecision {
+        // No one at the keyboard (a script, a pipe): nobody to ask, so go,
+        // as weft did before every plan waited for a word.
+        if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            return PlanDecision::Go;
+        }
         let prompt = "\n\x1b[33m?\x1b[0m Follow this plan?  [enter] go  [n] stop  or type notes to revise it  ";
         match read_line(prompt).await.as_deref().map(str::trim) {
             Some("") | Some("y") | Some("yes") | Some("go") => PlanDecision::Go,
