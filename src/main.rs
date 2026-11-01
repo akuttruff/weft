@@ -639,6 +639,37 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
                 }
                 at_line_start = true;
             }
+            AgentEvent::Finished { report } => {
+                if dim {
+                    print!("\x1b[0m");
+                    dim = false;
+                }
+                if !at_line_start {
+                    println!();
+                }
+                let color = if report.complete { 32 } else { 31 };
+                println!("  \x1b[{color}m╭ Result · {}\x1b[0m", report.summary());
+                for (i, c) in report.done_when.iter().enumerate() {
+                    let test = match (&c.test, c.without) {
+                        (Some(t), Some(w)) => format!("{t} · {}", w.words()),
+                        (Some(t), None) => t.clone(),
+                        (None, _) => "no test found".into(),
+                    };
+                    println!(
+                        "  \x1b[{color}m│\x1b[0m {}. {} \x1b[2m{test}\x1b[0m",
+                        i + 1,
+                        c.text
+                    );
+                }
+                for w in &report.warnings {
+                    println!("  \x1b[{color}m│\x1b[0m \x1b[33m⚠\x1b[0m {w}");
+                }
+                for t in &report.open {
+                    println!("  \x1b[{color}m│\x1b[0m ☐ {t}");
+                }
+                println!("  \x1b[{color}m╰\x1b[0m");
+                at_line_start = true;
+            }
             AgentEvent::Reasoning { text, .. } => {
                 if !dim {
                     print!("\x1b[2m");

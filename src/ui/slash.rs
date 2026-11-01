@@ -123,6 +123,32 @@ impl App {
                     None => self.push(view::note_line("no plan with worker's steps yet")),
                 }
             }
+            "/tasks" => {
+                if self.reports.is_empty() {
+                    self.push(view::note_line("no finished tasks in this session yet"));
+                } else {
+                    let lines = view::task_list(&self.reports);
+                    self.push(lines);
+                }
+            }
+            "/report" => {
+                let picked = match rest.parse::<usize>() {
+                    Ok(n) => self.reports.get(n.wrapping_sub(1)),
+                    Err(_) => self.reports.last(),
+                };
+                match picked {
+                    Some(r) => {
+                        let (lines, gutter) = (view::report_lines(r), view::report_gutter(r));
+                        self.push_with(lines, gutter);
+                    }
+                    None if self.reports.is_empty() => {
+                        self.push(view::note_line("no finished tasks in this session yet"))
+                    }
+                    None => self.push(view::note_line(&format!(
+                        "no task {rest}; /tasks lists them"
+                    ))),
+                }
+            }
             "/todos" if rest == "clear" => {
                 if self.running.is_some() {
                     self.push(view::note_line("a task is running; esc stops it"));
@@ -286,6 +312,7 @@ impl App {
         self.tasks = saved.tasks.len();
         self.todos = saved.todos.clone();
         self.plan = saved.last_plan.clone();
+        self.reports = saved.reports.clone();
         self.push(view::replay_lines(&saved));
     }
 

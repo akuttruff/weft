@@ -5,6 +5,8 @@ pub mod compact;
 pub mod convo;
 pub mod delegate;
 pub mod prompts;
+pub mod proof;
+pub mod report;
 pub mod scout;
 pub mod tandem;
 pub mod worker;
@@ -138,6 +140,10 @@ pub enum AgentEvent {
     /// The worker's checklist changed: the whole list as it now stands.
     Todos {
         items: Vec<crate::tools::todo::Todo>,
+    },
+    /// The task is over: whether the plan is complete, and the evidence.
+    Finished {
+        report: report::Report,
     },
 }
 

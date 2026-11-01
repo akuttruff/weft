@@ -664,9 +664,10 @@ mod tests {
                 AgentEvent::Compacted { .. } => "compacted",
                 AgentEvent::Reasoning { .. } => "think",
                 AgentEvent::Todos { .. } => "todos",
-                AgentEvent::Phase { .. } | AgentEvent::Plan { .. } | AgentEvent::Review { .. } => {
-                    "other"
-                }
+                AgentEvent::Phase { .. }
+                | AgentEvent::Plan { .. }
+                | AgentEvent::Review { .. }
+                | AgentEvent::Finished { .. } => "other",
             });
         }
         assert_eq!(

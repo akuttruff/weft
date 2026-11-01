@@ -75,6 +75,12 @@ const COMMANDS: &[(&str, &str, bool)] = &[
     ("/undo", "put back the files the last task changed", false),
     ("/resume", "pick up an earlier session", true),
     ("/steps", "the worker's steps of the last plan", false),
+    ("/tasks", "this session's tasks and how each ended", false),
+    (
+        "/report",
+        "the last task's result again; /report 2 for the second",
+        true,
+    ),
     (
         "/todos",
         "the worker's checklist; /todos clear empties it",
@@ -248,6 +254,8 @@ struct App {
     todos: Vec<Todo>,
     /// The last plan, whole, for `/steps`.
     plan: Option<String>,
+    /// Each finished task's result card this session, for `/tasks` and `/report`.
+    reports: Vec<crate::agent::report::Report>,
     /// When the question on screen (an approval, a plan) was asked, and
     /// whether a notification has gone out for it.
     asked_at: Option<(Instant, bool)>,
@@ -428,6 +436,7 @@ impl App {
             picking_session: false,
             todos: Vec::new(),
             plan: None,
+            reports: Vec::new(),
             asked_at: None,
             alert: Box::new(alert::send),
             shown: std::collections::VecDeque::new(),

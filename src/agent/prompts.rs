@@ -40,7 +40,7 @@ pub fn step_message(n: usize, of: usize, step: &str) -> String {
 
 /// Prefixed to the task when the planner has written a plan.
 pub const WORKER_WITH_PLAN: &str = "\
-The plan below opens with what the person expects, in their terms, and what they agreed to under `## Choices to confirm`: hold to that. Follow its `## Steps` one by one. If a step turns out wrong once you see the code, say so in your answer and do the nearest right thing rather than forcing it. Each line under `## Done when` needs a test that drives it through the real path the user would take (the same function that handles their request, with the same kind of input), not a shortcut built for the test; write those early, since they show what the plan missed. The plan carries what any screenshots show; look again only for a detail it lacks.";
+The plan below opens with what the person expects, in their terms, and what they agreed to under `## Choices to confirm`: hold to that. Follow its `## Steps` one by one. If a step turns out wrong once you see the code, say so in your answer and do the nearest right thing rather than forcing it. Each line under `## Done when` needs a test that drives it through the real path the user would take (the same function that handles their request, with the same kind of input), not a shortcut built for the test; write those early, since they show what the plan missed. The plan carries what any screenshots show; look again only for a detail it lacks. If the plan has `## Searched for`, every place it lists follows the change; search again when you are done, in case one was missed. A test for a change must fail without it: check against the code as it was, not only that it passes now. Change an existing test's expected value only when the request changes it, never to make a test pass.";
 
 /// Put above the task when the project has checks weft runs itself.
 pub fn checks_note(command: &str) -> String {
@@ -62,7 +62,7 @@ Stop looking: you have used the look-arounds allowed, and no tools are available
 
 /// Sent when the reviewer's answer had no verdict line.
 pub const VERDICT_ONLY: &str = "\
-Your answer had no verdict line. Answer again now, with no tool calls: the first line exactly `VERDICT: APPROVE` or `VERDICT: FIX`, then the numbered list or the one-line note, in the shape you were given.";
+Your answer had no verdict line. Answer again now, with no tool calls: the first line exactly `VERDICT: APPROVE` or `VERDICT: FIX`, then the `Done when:` block if the plan has one, then the numbered list or the one-line note, in the shape you were given.";
 
 /// The reviewer's last turn when its look-arounds are spent.
 pub const REVIEW_NOW: &str = "\
@@ -127,6 +127,9 @@ The one command the worker should run when done.
 ## Watch out
 Up to three bullets on pitfalls you noticed, or `Nothing`.
 
+## Searched for
+When the change alters an idea the code holds in more than one place (which day a week starts on, a unit, a limit, a name, a format), the ways the code expresses it and what each search found: `getDay()` → `src/lib/dates.ts:12`, `src/components/Grid.tsx:240`. Search for the idea, not only for the function you will change: constants, hand-written arithmetic, labels, layout. Every place found is in `## Steps` or said to need no change. Leave the section out when the change is local.
+
 When the work is large, more than about three files or several distinct pieces, add one more section so the worker does it in rounds, each with a fresh look at the code and room in its window:
 
 ## Tasks
@@ -153,8 +156,10 @@ You may look past the diff with read-only tools (`search`, `read_file`, `scout`)
 1. The request: the diff does what the person asked, in their own words in the task, not only what the plan says. Where the plan's \"Choices to confirm\" says it does something else, that was the person's to accept when they approved the plan; otherwise doing something other than what they asked is a FIX.
 2. Checks: if the Checks section says FAILED, the verdict is FIX, with the failures to mend.
 3. Done when: each line of the plan's `## Done when` has a test in the diff that drives it through the path the user would take. A missing test, or one that builds its own shortcut around the real path, is a FIX.
+3b. Tests without the change: the section `New tests, run without the change` says how each new test did with the code put back as it was. A `Done when` test that passes there does not test the change, unless its line is about something that must stay as it was; otherwise it is a FIX: the test must fail without the change.
+3c. Existing test lines changed: each change under `Existing test lines changed` must follow from the request. One that loosens a check (a value moved off the edge it tested, a stricter match made looser, a check taken out) without the request calling for it is a FIX, naming the line to put back.
 4. Neighbours: new code that does what nearby code already does (validating input, building ids, formatting) uses the same helpers, not a looser copy. Search for how the sibling cases do it.
-5. Leftovers: when something was removed or renamed, search for its name and for words describing it (prompts, docs, comments, tests); what still refers to it is a FIX.
+5. Leftovers: when something was removed or renamed, search for its name and for words describing it (prompts, docs, comments, tests); what still refers to it is a FIX. When an idea changed meaning (a week now starts on Monday), search for code that works it out by hand the old way: the plan's `## Searched for` patterns, and other spellings of the same idea (constants, arithmetic on dates or sizes, labels, layout). A place still following the old idea is a FIX.
 6. Anything else that is wrong or half-done for the task.
 
 Answer in exactly this shape:
@@ -162,6 +167,12 @@ Answer in exactly this shape:
 VERDICT: APPROVE
 or
 VERDICT: FIX
+
+Done when:
+1. `path:line` \"test name\" — the test that covers the plan's first `Done when` line, or `none`
+2. ...
+
+(the `Done when:` block only when the plan has a `## Done when`, one line for each of its lines, in order, then a blank line)
 
 For FIX, follow with a numbered list, one line each: `path`: what to change and why. Only things that matter to the task; no style preferences, no scope beyond it. For APPROVE, follow with one line on anything worth noting, or `Nothing to add`.";
 

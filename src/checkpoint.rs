@@ -8,6 +8,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+/// A file as it was before the task; see `Checkpoint::before`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Before {
+    /// The copy kept before its first change.
+    Kept(PathBuf),
+    /// The task created it.
+    Absent,
+    /// In git's copy of the tree from before the task (a commit, or `HEAD`).
+    Git(String),
+}
+
 #[derive(Debug)]
 pub struct Checkpoint {
     dir: PathBuf,
@@ -145,6 +156,19 @@ impl Checkpoint {
             .chain(&state.git_new)
             .cloned()
             .collect()
+    }
+
+    /// Where `rel` as it was before the task can be had: the kept copy, git's
+    /// copy of the tree, or nowhere because the task made it.
+    pub fn before(&self, rel: &str) -> Before {
+        let state = self.state.lock().unwrap();
+        if state.saved.contains(rel) {
+            Before::Kept(self.dir.join("files").join(rel))
+        } else if state.created.contains(rel) || state.git_new.contains(rel) {
+            Before::Absent
+        } else {
+            Before::Git(state.git_base.clone().unwrap_or_else(|| "HEAD".into()))
+        }
     }
 
     /// Put every file back as it was and drop the checkpoint. Returns what was touched.

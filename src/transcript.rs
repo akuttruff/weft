@@ -185,6 +185,8 @@ pub struct Saved {
     pub last_plan: Option<String>,
     /// The worker's checklist as it was last written.
     pub todos: Vec<crate::tools::todo::Todo>,
+    /// Each finished task's result, in order.
+    pub reports: Vec<crate::agent::report::Report>,
 }
 
 /// Read one session file.
@@ -230,6 +232,9 @@ impl Saved {
                 }
                 if let AgentEvent::Todos { items } = &event {
                     self.todos = items.clone();
+                }
+                if let AgentEvent::Finished { report } = &event {
+                    self.reports.push(report.clone());
                 }
                 if let AgentEvent::TurnEnd { role, usage, .. } = event {
                     match role {

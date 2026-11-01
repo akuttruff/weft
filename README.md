@@ -75,6 +75,8 @@ a word, and so on.
 | `/think` | toggles the worker's thinking |
 | `/steps` | the worker's steps of the last plan, folded on the screen |
 | `/todos` | the worker's checklist; `/todos clear` empties it |
+| `/tasks` | this session's tasks and how each ended |
+| `/report` | the last task's result card again; `/report 2` for the second |
 | `/memory` | what weft has kept about this project |
 | `/cost` | tokens used this session |
 | `/mcp` | the MCP servers and their tools |
@@ -96,7 +98,11 @@ a word, and so on.
    the pieces fit together; and `## Done when`, what must work as you would
    try it. The second, from `## Steps`, is for the worker: the files and
    changes (naming the helpers nearby code already uses), the command that
-   verifies, and the pitfalls. A plan that skips the first part is asked for
+   verifies, and the pitfalls. When the change alters an idea the code holds
+   in more than one place (which day a week starts on, a unit, a format), the
+   plan adds `## Searched for`: the ways the code expresses it and where each
+   search found them, so the worker and the reviewer can check none is left
+   on the old idea. A plan that skips the first part is asked for
    again, once; out of look-arounds, the planner writes from what it has.
    The screen shows your part and folds the worker's to one line; `/steps`
    opens it.
@@ -111,28 +117,53 @@ a word, and so on.
    to finish them or say why it cannot.
 5. **Checks.** If files were touched and the project has a `verify` command
    (see `[[project]]` below), weft runs it itself. A failure goes back to the
-   worker, thinking on, with the end of the output, up to three times. The
-   summary line says how they ended.
-6. **Review.** If files were touched, by the edit tools or through `bash`
+   worker, thinking on, with the end of the output, up to three times.
+6. **Tests without the change.** A passing test can still prove nothing, so
+   before each review weft copies the project to a temporary folder, puts
+   the task's changed code (not its tests) back as it was, and runs the tests
+   the task added there. Each should fail. One that passes without the
+   change tests something that was already so, and the reviewer is told
+   which. Your working tree is never touched. The tests run with the
+   `[[project]]`'s `test` command, or one weft guesses: vitest or jest from
+   `package.json`, pytest, or `cargo test`. weft also lists every existing
+   assertion the task changed or took out, renames aside, so a check moved
+   off its edge to make it pass is seen.
+7. **Review.** If files were touched, by the edit tools or through `bash`
    (git shows what changed), the planner model reads the diff, the checks'
-   result, the task and the plan. It may look past the diff with read-only
-   tools, a few calls, and goes through a list: failing checks, a test for
-   each `Done when` line, new code using the helpers its neighbours use, and
-   anything still naming what was removed. It answers `APPROVE` or `FIX`
-   with a numbered list; the asks join the checklist. On `FIX` the worker
-   goes again, thinking on, and the checks run again, then the reviewer
-   reads the new diff. Two rounds by default: one fix pass; asks from the
-   last round wait on the checklist for "continue". An answer with no verdict line is asked for again, once, with no
-   tools; still none, and the review is called inconclusive: not approved,
-   and the worker is not sent after a guess.
+   result, the run without the change, the changed assertions, the task and
+   the plan. It may look past the diff with read-only tools, a few calls, and
+   goes through a list: failing checks; a test for each `Done when` line that
+   fails without the change; changed assertions the request does not call
+   for; new code using the helpers its neighbours use; and anything still
+   naming what was removed or working out the old idea by hand. It answers
+   `APPROVE` or `FIX`, names the test that covers each `Done when` line, and
+   lists its asks, which join the checklist. On `FIX` the worker goes again,
+   thinking on, the checks run again, and the reviewer reads the new diff;
+   earlier asks it does not make again are ticked off. Two rounds by
+   default: one fix pass; asks from the last round wait on the checklist for
+   "continue". An answer with no verdict line is asked for again, once, with
+   no tools; still none, and the review is called inconclusive: not
+   approved, and the worker is not sent after a guess.
+8. **Result.** The task ends with a card that says whether the plan is
+   complete. It is complete when no step is open, the checks pass, the
+   reviewer approved, and every `Done when` line has a test. Each `Done
+   when` line shows its test and how it did without the change (`✓` fails
+   without it, `⚠` passes anyway, `✗` no test). Under the line come the steps,
+   the checks, the review and the time; then anything to look at (a test
+   that passes without the change, an existing assertion changed), why it is
+   not complete, and the steps still open. The card is green when complete,
+   yellow when complete with something to look at, red when not. A task
+   that took a minute or more sends a notification with the card's
+   headline. `/tasks` lists the session's tasks with theirs, and `/report`
+   shows a card again; both come back with `/resume`.
 
 Tasks given one after another share the worker's conversation, so "now do the
 same for X" works. A task that reaches its cap of 120 tool rounds ends with
 a report of what is done and what is left, and "continue" picks it up. A task that stops early, by esc or by running out of
 room, keeps the steps it finished, closed with a line saying why, so the next
 task or a resume can carry on from them. The checklist lasts the session (and
-comes back with `/resume`): a task that ends with steps open lists them under
-its summary line, and the next task is shown them, so "continue" picks up at
+comes back with `/resume`): a task that ends with steps open lists them on
+its result card, and the next task is shown them, so "continue" picks up at
 the first open one.
 
 **Large work runs in rounds.** When the plan spans more than a few files,
@@ -238,6 +269,7 @@ run = "cargo fmt"           # run with sh -c, in the project root
 [[project]]                 # one per folder, matched by path; nothing goes in the repository
 path = "~/Code/myapp"
 verify = "npx tsc --noEmit && npx vitest run"   # weft runs it after the worker; failures go back
+test = "npx vitest run --reporter=verbose {files}"  # runs the new tests without the change; guessed if left out
 verify_timeout_s = 300
 notes = """
 - Commits are one line.
@@ -421,7 +453,9 @@ appears. In order:
 3. **`src/agent/`** — the `Model` trait so tests can script a fake model, the
    worker loop, `tokio::select!` for cancellation, a forwarding task. Then
    `tandem.rs`: the same loop reused for the planner and the reviewer, and the
-   verdict parser. `scout.rs` and `delegate.rs`: the loop wrapped up as a
+   verdict parser. `proof.rs`: reading a unified diff, a small tokenizer, a
+   copy of the project made with `cp` and removed after. `report.rs`: a
+   result built from the rest, serialised into the transcript as an event. `scout.rs` and `delegate.rs`: the loop wrapped up as a
    `Tool` the other models can call, the latter with an `Arc<dyn Approver>`
    carried in through the tool context. `compact.rs`: slicing a conversation
    and rewriting it around a note. `convo.rs`: the one place that writes and

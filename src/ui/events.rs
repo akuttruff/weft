@@ -163,6 +163,11 @@ impl App {
                 text,
                 inconclusive,
             } => self.push(view::review_lines(approved, inconclusive, &text)),
+            AgentEvent::Finished { report } => {
+                self.flush_text();
+                self.push_with(view::report_lines(&report), view::report_gutter(&report));
+                self.reports.push(report);
+            }
             AgentEvent::Hook { ok, text } => {
                 self.flush_text();
                 if text.is_empty() {
@@ -258,6 +263,11 @@ impl App {
         let secs = began.map(|b| b.elapsed().as_secs()).unwrap_or(0);
         if secs >= alert::DONE_NOTIFY_AFTER.as_secs() {
             let body = match &result {
+                Ok(out) if out.report.is_some() => format!(
+                    "{} · {}.",
+                    out.report.as_ref().map(|r| r.summary()).unwrap_or_default(),
+                    view::clock(secs)
+                ),
                 Ok(out) if out.review_inconclusive => format!(
                     "Done in {}; the review was inconclusive.",
                     view::clock(secs)
@@ -294,6 +304,16 @@ impl App {
                 } else {
                     format!(" · {}", out.touched.join(", "))
                 };
+                // The result card above says the rest.
+                if out.report.is_some() {
+                    self.push(view::note_line(&format!(
+                        "  {} · planner {} · worker {} tokens",
+                        view::clock(secs),
+                        view::k(view::total(out.planner_usage)),
+                        view::k(view::total(out.worker_usage)),
+                    )));
+                    return;
+                }
                 let (done, total) = todo::progress(&self.todos);
                 let todos = if total == 0 {
                     String::new()

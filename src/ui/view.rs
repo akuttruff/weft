@@ -6,6 +6,8 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
 use super::diff::{Kind, Row};
+use crate::agent::proof::Without;
+use crate::agent::report::Report;
 use crate::lm::Usage;
 use crate::mcp::Status as McpStatus;
 use crate::tools::todo::{self, Status, Todo};
@@ -529,9 +531,261 @@ pub fn clock(secs: u64) -> String {
     }
 }
 
+/// Green when the task is complete with nothing to look at, yellow when
+/// there is something to look at, red when it is not complete.
+fn report_color(r: &Report) -> Color {
+    match (r.complete, r.warnings.is_empty()) {
+        (false, _) => Color::Red,
+        (true, true) => Color::Green,
+        (true, false) => Color::Yellow,
+    }
+}
+
+/// The card's gutter, for its wrapped lines.
+pub fn report_gutter(r: &Report) -> Vec<Span<'static>> {
+    vec![Span::styled("  │ ", Style::new().fg(report_color(r)))]
+}
+
+/// The result card a task ends with: the verdict, each `Done when` line
+/// with the test that covers it and how it did without the change, the
+/// checks and the review, what to look at, and what is still open.
+pub fn report_lines(r: &Report) -> Vec<Line<'static>> {
+    let color = report_color(r);
+    let gutter = || Span::styled("  │ ", Style::new().fg(color));
+    let row = |spans: Vec<Span<'static>>| {
+        let mut l = vec![gutter()];
+        l.extend(spans);
+        Line::from(l)
+    };
+    let dim = Style::new().dim();
+    let mark = if r.complete { "✓" } else { "✗" };
+    let mut out = vec![Line::from(vec![
+        Span::styled("  ╭ ", Style::new().fg(color)),
+        Span::styled(
+            format!("Result · {} {mark}", r.headline()),
+            Style::new().fg(color).bold(),
+        ),
+    ])];
+    if let Some(asked) = &r.asked {
+        let first = asked.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+        out.push(row(vec![Span::styled(clip(first, 200), dim)]));
+    }
+
+    if !r.done_when.is_empty() {
+        out.push(row(vec![Span::styled("Done when", Style::new().bold())]));
+        let reviewed = r.done_when.iter().any(|c| c.test.is_some())
+            || r.problems.iter().any(|p| p.starts_with("no test for"));
+        for (i, c) in r.done_when.iter().enumerate() {
+            let (m, style) = match (&c.test, c.without) {
+                (None, _) if reviewed => ("✗", Style::new().fg(Color::Red)),
+                (None, _) => ("·", dim),
+                (Some(_), Some(Without::Fails | Without::FileFails)) => {
+                    ("✓", Style::new().fg(Color::Green))
+                }
+                (Some(_), Some(Without::Passes)) => ("⚠", Style::new().fg(Color::Yellow)),
+                (Some(_), _) => ("✓", Style::new().fg(Color::Green)),
+            };
+            let mut spans = vec![
+                Span::raw("  "),
+                Span::styled(format!("{m} "), style),
+                Span::raw(format!("{}. ", i + 1)),
+            ];
+            spans.extend(inline(&clip(&c.text, 200), Style::new()));
+            out.push(row(spans));
+            let under = match (&c.test, c.without) {
+                (None, _) if reviewed => "no test found".to_string(),
+                (None, _) => "not reviewed".to_string(),
+                (Some(t), Some(w)) if w != Without::Unknown => format!("{t} · {}", w.words()),
+                (Some(t), _) => t.clone(),
+            };
+            let mut spans = vec![Span::raw("       ")];
+            spans.extend(inline(&clip(&under, 200), dim));
+            out.push(row(spans));
+        }
+    }
+
+    let (done, total) = r.steps;
+    let mut facts = Vec::new();
+    if total > 0 {
+        facts.push(format!("steps {done}/{total}"));
+    }
+    facts.push(match r.checks {
+        Some(true) => "checks passed".to_string(),
+        Some(false) => "checks FAILED".to_string(),
+        None => "no checks run".to_string(),
+    });
+    facts.push(format!("review {}", r.review));
+    facts.push(clock(r.seconds));
+    out.push(row(vec![Span::styled(facts.join(" · "), dim)]));
+    if let Some(note) = &r.without_note {
+        out.push(row(vec![Span::styled(
+            format!("new tests not run without the change: {note}"),
+            dim,
+        )]));
+    }
+
+    if !r.problems.is_empty() {
+        out.push(row(vec![Span::styled("Not complete", Style::new().bold())]));
+        for p in &r.problems {
+            out.push(row(vec![
+                Span::raw("  "),
+                Span::styled("✗ ", Style::new().fg(Color::Red)),
+                Span::raw(p.clone()),
+            ]));
+        }
+    }
+    // What the Done-when lines above do not already say.
+    let looks: Vec<&String> = r
+        .warnings
+        .iter()
+        .filter(|w| !w.starts_with("Done when"))
+        .collect();
+    if !looks.is_empty() {
+        out.push(row(vec![Span::styled("Look at", Style::new().bold())]));
+        for w in looks {
+            out.push(row(vec![
+                Span::raw("  "),
+                Span::styled("⚠ ", Style::new().fg(Color::Yellow)),
+                Span::raw(w.clone()),
+            ]));
+            if w.contains("existing test line") {
+                for c in r.changed.iter().take(5) {
+                    let was = match &c.after {
+                        Some(after) => format!("{} → {}", clip(&c.before, 70), clip(after, 70)),
+                        None => format!("taken out: {}", clip(&c.before, 120)),
+                    };
+                    out.push(row(vec![Span::styled(
+                        format!("     {}:{} {was}", c.file, c.line),
+                        dim,
+                    )]));
+                }
+                if r.changed.len() > 5 {
+                    out.push(row(vec![Span::styled(
+                        format!("     (+{} more)", r.changed.len() - 5),
+                        dim,
+                    )]));
+                }
+            }
+        }
+    }
+    if !r.open.is_empty() {
+        out.push(row(vec![
+            Span::styled("Still open", Style::new().bold()),
+            Span::styled(" · say \"continue\" to carry on", dim),
+        ]));
+        for t in &r.open {
+            out.push(row(vec![Span::raw(format!("  ☐ {}", clip(t, 200)))]));
+        }
+    }
+    if !r.files.is_empty() {
+        out.push(row(vec![Span::styled(
+            format!("files {}", r.files.join(", ")),
+            dim,
+        )]));
+    }
+    out.push(Line::from(Span::styled("  ╰", Style::new().fg(color))));
+    out
+}
+
+/// `/tasks`: each finished task, how it ended, and how long it took.
+pub fn task_list(reports: &[Report]) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    for (i, r) in reports.iter().enumerate() {
+        let color = report_color(r);
+        out.push(Line::from(vec![
+            Span::styled(format!("  {:>2}. ", i + 1), Style::new().dim()),
+            Span::styled(
+                format!("{} ", if r.complete { "✓" } else { "✗" }),
+                Style::new().fg(color),
+            ),
+            Span::styled(r.summary(), Style::new().fg(color)),
+            Span::styled(format!(" · {}", clock(r.seconds)), Style::new().dim()),
+        ]));
+        out.push(Line::from(Span::styled(
+            format!("      > {}", clip(r.task.lines().next().unwrap_or(""), 100)),
+            Style::new().dim(),
+        )));
+    }
+    out.push(Line::from(Span::styled(
+        "  /report <number> shows one again",
+        Style::new().dim(),
+    )));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::proof::Changed;
+    use crate::agent::report::Covered;
+
+    fn text(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_result_card_shows_each_done_when_line_and_what_to_look_at() {
+        let r = Report {
+            task: "weeks start Monday".into(),
+            asked: Some("Weeks start on Monday.".into()),
+            planned: true,
+            complete: true,
+            warnings: vec![
+                "Done when 2: its test passes without the change".into(),
+                "1 existing test line changed".into(),
+            ],
+            done_when: vec![
+                Covered {
+                    text: "The week shows Mon–Sun.".into(),
+                    test: Some("`src/App.test.tsx:1910` \"shows the week\"".into()),
+                    without: Some(Without::Fails),
+                },
+                Covered {
+                    text: "Water counts from Monday.".into(),
+                    test: Some("`src/App.test.tsx:2081`".into()),
+                    without: Some(Without::Passes),
+                },
+            ],
+            steps: (5, 5),
+            checks: Some(true),
+            review: "approved after 1 fix round".into(),
+            changed: vec![Changed {
+                file: "server/store.test.ts".into(),
+                line: 1009,
+                before: "addDays(week, 6)".into(),
+                after: Some("addDays(week, 5)".into()),
+            }],
+            files: vec!["src/lib/nutrition.ts".into()],
+            seconds: 3546,
+            ..Default::default()
+        };
+        let shown = text(&report_lines(&r));
+        for want in [
+            "╭ Result · plan complete · 2 things to look at ✓",
+            "│ Weeks start on Monday.",
+            "│   ✓ 1. The week shows Mon–Sun.",
+            "src/App.test.tsx:1910 \"shows the week\" · fails without the change",
+            "│   ⚠ 2. Water counts from Monday.",
+            "src/App.test.tsx:2081 · passes without the change",
+            "steps 5/5 · checks passed · review approved after 1 fix round · 59m06s",
+            "⚠ 1 existing test line changed",
+            "server/store.test.ts:1009 addDays(week, 6) → addDays(week, 5)",
+            "╰",
+        ] {
+            assert!(shown.contains(want), "{want:?} missing from\n{shown}");
+        }
+        assert!(!shown.contains("Not complete") && !shown.contains("Still open"));
+        assert_eq!(report_lines(&r)[1].spans[0].style.fg, Some(Color::Yellow));
+    }
 
     #[test]
     fn inline_marks_bold_and_code() {

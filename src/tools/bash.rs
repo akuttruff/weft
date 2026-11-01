@@ -76,6 +76,8 @@ impl Tool for Bash {
 pub struct Ran {
     pub ok: bool,
     pub text: String,
+    /// All of it, uncut: for weft's own reading, not a model's.
+    pub full: String,
 }
 
 /// Run `command` with zsh in `root`, killed after `timeout` seconds.
@@ -137,6 +139,7 @@ pub async fn run_shell(
     Ok(Ran {
         ok: status.success(),
         text: shown,
+        full: text,
     })
 }
 

@@ -42,6 +42,12 @@ pub struct Project {
     /// `npx tsc --noEmit && npx vitest run`. A failure goes back to the worker.
     #[serde(default)]
     pub verify: Option<String>,
+    /// Runs some test files, `{files}` standing for them:
+    /// `npx vitest run --reporter=verbose {files}`. weft runs the tests a task
+    /// added with the code put back as it was, to see that they fail without
+    /// the change. Guessed from the project's files when not given.
+    #[serde(default)]
+    pub test: Option<String>,
     /// Seconds the checks may take before they count as failed.
     #[serde(default = "default_verify_timeout")]
     pub verify_timeout_s: u64,

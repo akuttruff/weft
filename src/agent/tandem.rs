@@ -8,6 +8,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::convo::{exchanges, task_message};
+use super::proof::{self, Proof, Without, is_test_file};
+use super::report::{self, Report, coverage};
 use super::worker::{Outcome, Worker, WorkerError};
 use super::{AgentEvent, Approver, Events, Model, PlanDecision, Role, Yes, prompts};
 use crate::config::{Confirm, PlanWhen};
@@ -60,6 +62,8 @@ pub struct TandemOutcome {
     pub rounds: usize,
     pub planner_usage: Usage,
     pub worker_usage: Usage,
+    /// What the card shows when the task ends; `None` when it stopped at its plan.
+    pub report: Option<Report>,
 }
 
 pub struct Tandem<'a> {
@@ -102,6 +106,7 @@ impl Tandem<'_> {
         messages: &mut Vec<Message>,
     ) -> Result<TandemOutcome, WorkerError> {
         let mut out = TandemOutcome::default();
+        let began = std::time::Instant::now();
         // The planner, the triage and the reviewer do not see the worker's
         // conversation, so "now add a test for that" needs the earlier exchange.
         let earlier = earlier(messages);
@@ -297,8 +302,15 @@ impl Tandem<'_> {
 
         // 4. Review what was changed, and send the worker back if asked.
         let mut round = 0;
+        // The last review's `Done when:` block, and the evidence it read.
+        let mut cover: Vec<String> = Vec::new();
+        let mut proof: Option<Proof> = None;
+        // The `Fix:` steps this task's reviews asked for.
+        let mut asked: Vec<String> = Vec::new();
         while !out.touched.is_empty() && round < self.review_rounds {
             round += 1;
+            // The new tests, run with the code as it was: each should fail.
+            let found = self.prove(&out).await?;
             self.phase("reviewing").await;
             let diff = diff_of(&self.ctx.root, &out.touched).await;
             let brief = review_brief(
@@ -306,8 +318,10 @@ impl Tandem<'_> {
                 plan.as_deref(),
                 &out.answer,
                 checks.as_deref(),
+                &found.brief(),
                 &diff,
             );
+            proof = Some(found);
             // The reviewer may look past the diff: at the code around it, at
             // what the changed code's neighbours do, for names left behind.
             let mut reviewer = self
@@ -334,6 +348,12 @@ impl Tandem<'_> {
                 let second = again.run(&mut convo).await?;
                 out.planner_usage = add(out.planner_usage, second.usage);
                 (decided, text) = verdict(&second.answer);
+            }
+            // Which test covers each `Done when` line, for the result card.
+            let (covered, rest) = coverage(&text);
+            text = rest;
+            if !covered.is_empty() {
+                cover = covered;
             }
             let Some(approved) = decided else {
                 // Not approval, and nothing to send the worker after.
@@ -380,13 +400,14 @@ impl Tandem<'_> {
             }
             // The reviewer's asks join the checklist: ticked off in the fix
             // round, or left open for the next task when no round is left.
-            let mut list = self.todos();
-            list.extend(
-                numbered(&text)
-                    .into_iter()
-                    .map(|fix| Todo::pending(clip(&format!("{FIX}{fix}"), ITEM_CHARS))),
-            );
-            todo::set(self.ctx, list).await;
+            // Asks from this task's earlier rounds that it did not make again,
+            // having read the fixed diff, are settled.
+            let new: Vec<String> = numbered(&text)
+                .into_iter()
+                .map(|fix| clip(&format!("{FIX}{fix}"), ITEM_CHARS))
+                .collect();
+            todo::set(self.ctx, settle(self.todos(), &asked, &new)).await;
+            asked.extend(new);
             if round == self.review_rounds {
                 out.fixes_pending = true;
                 break;
@@ -401,7 +422,110 @@ impl Tandem<'_> {
             self.collect_touched(&git_before, &mut out).await;
             checks = self.check(messages, &git_before, &mut out).await?;
         }
+
+        // 5. The result, for the card the screen shows; a question that
+        // changed nothing and had no plan gets none.
+        if out.plan.is_none() && out.touched.is_empty() {
+            return Ok(out);
+        }
+        let report = report::build(
+            task,
+            out.plan.as_deref(),
+            &out,
+            &self.todos(),
+            &cover,
+            proof.as_ref(),
+            began.elapsed().as_secs(),
+        );
+        self.emit(AgentEvent::Finished {
+            report: report.clone(),
+        })
+        .await;
+        out.report = Some(report);
         Ok(out)
+    }
+
+    /// The tests this task added, run in a copy of the project with the
+    /// code (not the tests) as it was before the task: a test that passes
+    /// there does not test the change. Also the existing test lines changed.
+    async fn prove(&mut self, out: &TandemOutcome) -> Result<Proof, WorkerError> {
+        let root = self.ctx.root.clone();
+        let mut new = Vec::new();
+        let mut changed = Vec::new();
+        let mut test_files = Vec::new();
+        for f in out.touched.iter().filter(|f| is_test_file(f)) {
+            let Some((diff, is_new)) = proof::file_diff(&root, f).await else {
+                continue;
+            };
+            let found = proof::new_tests(f, &diff);
+            if !found.is_empty() {
+                test_files.push(f.clone());
+            }
+            new.extend(found);
+            if !is_new {
+                changed.extend(proof::changed_lines(f, &diff));
+            }
+        }
+        if new.is_empty() {
+            return Ok(Proof::found(new, changed, None));
+        }
+        let code: Vec<String> = out
+            .touched
+            .iter()
+            .filter(|f| !is_test_file(f))
+            .cloned()
+            .collect();
+        if code.is_empty() {
+            let note = "only tests changed, so there is no code to put back";
+            return Ok(Proof::found(new, changed, Some(note.into())));
+        }
+        let Some(command) = proof::test_command(&root, self.ctx.project.test.as_deref()) else {
+            let note =
+                "weft does not know how to run this project's tests; set `test` in its [[project]]";
+            return Ok(Proof::found(new, changed, Some(note.into())));
+        };
+        let command = proof::with_files(&command, &test_files);
+        self.phase("checking").await;
+        let id = format!("without-{}", out.reviews.len());
+        self.emit(AgentEvent::ToolStart {
+            id: id.clone(),
+            name: "checks".into(),
+            summary: format!("Without the change {command}"),
+            args: serde_json::json!({ "command": command }),
+        })
+        .await;
+        let ran = tokio::select! {
+            r = proof::run_without(
+                &root,
+                self.ctx.checkpoint.as_deref(),
+                &code,
+                &command,
+                self.ctx.project.verify_timeout_s,
+            ) => r,
+            _ = self.cancel.cancelled() => return Err(WorkerError::Cancelled),
+        };
+        let found = match ran {
+            Ok(text) => {
+                let results = proof::read_results(&text, &new);
+                let note = results.iter().all(|w| *w == Without::Unknown).then(|| {
+                    "its output did not name the new tests; a verbose reporter lists each"
+                        .to_string()
+                });
+                Proof {
+                    tests: new.into_iter().zip(results).collect(),
+                    changed,
+                    note,
+                }
+            }
+            Err(e) => Proof::found(new, changed, Some(format!("could not run them: {e}"))),
+        };
+        self.emit(AgentEvent::ToolDone {
+            id,
+            ok: found.note.is_none() && found.passing().is_empty(),
+            output: without_summary(&found),
+        })
+        .await;
+        Ok(found)
     }
 
     /// Every file the task changed: by the edit tools, by a helper (the
@@ -688,7 +812,7 @@ pub fn plan_items(plan: &str) -> Vec<String> {
 }
 
 /// The text under `heading`, up to the next heading; empty without one.
-fn section<'p>(plan: &'p str, heading: &str) -> &'p str {
+pub(crate) fn section<'p>(plan: &'p str, heading: &str) -> &'p str {
     match plan.split_once(heading) {
         Some((_, after)) => after.split("\n## ").next().unwrap_or(""),
         None => "",
@@ -696,7 +820,7 @@ fn section<'p>(plan: &'p str, heading: &str) -> &'p str {
 }
 
 /// `1. a` and `2) b` lines, without their numbers.
-fn numbered(text: &str) -> Vec<String> {
+pub(crate) fn numbered(text: &str) -> Vec<String> {
     text.lines()
         .map(str::trim)
         .filter_map(|l| {
@@ -946,12 +1070,57 @@ fn clip(s: &str, max: usize) -> String {
     }
 }
 
+/// The run without the change, as the screen shows it: a line, then each test.
+fn without_summary(p: &Proof) -> String {
+    if let Some(note) = &p.note {
+        return format!("not run: {note}");
+    }
+    let fails = p
+        .tests
+        .iter()
+        .filter(|(_, w)| matches!(w, Without::Fails | Without::FileFails))
+        .count();
+    let mut s = format!(
+        "{fails} of {} new test{} fail without the change",
+        p.tests.len(),
+        if p.tests.len() == 1 { "" } else { "s" }
+    );
+    for (t, w) in &p.tests {
+        let mark = match w {
+            Without::Fails | Without::FileFails => "✓",
+            Without::Passes => "⚠",
+            Without::Unknown => "?",
+        };
+        s.push_str(&format!("\n{mark} {}: {}", t.name, w.words()));
+    }
+    s
+}
+
+/// The checklist with the reviewer's new asks: `asked` (this task's earlier
+/// asks) not among `new` are done; a new ask already listed is open again.
+fn settle(mut list: Vec<Todo>, asked: &[String], new: &[String]) -> Vec<Todo> {
+    for t in list
+        .iter_mut()
+        .filter(|t| t.is_open() && asked.contains(&t.text) && !new.contains(&t.text))
+    {
+        t.status = Status::Done;
+    }
+    for n in new {
+        match list.iter_mut().find(|t| &t.text == n) {
+            Some(t) => t.status = Status::Pending,
+            None => list.push(Todo::pending(n.clone())),
+        }
+    }
+    list
+}
+
 /// What the reviewer reads.
 fn review_brief(
     task: &str,
     plan: Option<&str>,
     report: &str,
     checks: Option<&str>,
+    proof: &str,
     diff: &str,
 ) -> String {
     let mut b = format!("## Task\n{task}\n\n");
@@ -964,6 +1133,7 @@ fn review_brief(
             "## Checks\nRun by weft just now, not by the worker:\n```\n{c}\n```\n\n"
         ));
     }
+    b.push_str(proof);
     b.push_str(&format!("## Diff\n```\n{diff}\n```"));
     b
 }
@@ -1454,7 +1624,7 @@ mod tests {
             path: String::new(),
             verify: Some(verify.into()),
             verify_timeout_s: 30,
-            notes: None,
+            ..Default::default()
         });
         ctx
     }
@@ -1533,6 +1703,137 @@ mod tests {
                 && review[0].contains("`test -f ok.txt` passed"),
             "{}",
             review[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_new_tests_run_without_the_change_and_the_card_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let cp = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("code.txt"), "old\n").unwrap();
+        let mut ctx = Ctx::new(dir.path().to_path_buf()).with_checkpoint(Some(
+            std::sync::Arc::new(crate::checkpoint::Checkpoint::new(cp.path().join("cp"))),
+        ));
+        // A runner that marks each test, the first true only of the new code.
+        ctx.project = std::sync::Arc::new(crate::config::Project {
+            verify: Some("true".into()),
+            test: Some(
+                "grep -q new code.txt && echo '✓ says new' || echo '× says new'; echo '✓ keeps the rest'"
+                    .into(),
+            ),
+            verify_timeout_s: 30,
+            ..Default::default()
+        });
+        let mut registry = Registry::builtin();
+        registry.extend(vec![Box::new(crate::tools::todo::TodoWrite)]);
+        let plan = "## What you asked for\nSay new.\n\n## What will change for you\n- It says new.\n\n## Choices to confirm\nNone\n\n## How it fits together\n- One file.\n\n## Done when\n1. It says new.\n2. The rest stays.\n\n## Steps\n1. `code.txt`: say new";
+        let planner = Scripted::new("planner", vec![Scripted::text(plan)]);
+        let reviewer = Scripted::new(
+            "reviewer",
+            vec![Scripted::text(
+                "VERDICT: APPROVE\nDone when:\n1. `check.test.js:1` \"says new\"\n2. `check.test.js:2` \"keeps the rest\"\n\nNothing to add",
+            )],
+        );
+        let tests = "it('says new', () => {})\nit('keeps the rest', () => {})\n";
+        let worker = Scripted::new(
+            "worker",
+            vec![
+                Scripted::calls(vec![
+                    edit("code.txt", "old", "new"),
+                    ToolCall {
+                        id: "w".into(),
+                        name: "write_file".into(),
+                        arguments: json!({"path": "check.test.js", "content": tests}),
+                    },
+                    ToolCall {
+                        id: "t".into(),
+                        name: "todo".into(),
+                        arguments: json!({"todos": [
+                            {"text": "`code.txt`: say new", "status": "done"},
+                            {"text": "Test: It says new.", "status": "done"},
+                            {"text": "Test: The rest stays.", "status": "done"}
+                        ]}),
+                    },
+                ]),
+                Scripted::text("Changed, with tests."),
+            ],
+        );
+        let worker_thinking = Scripted::new("worker-thinking", vec![]);
+        let (events, mut rx) = mpsc::channel(256);
+        let mut tandem = Tandem {
+            planner: &planner,
+            reviewer: &reviewer,
+            worker: &worker,
+            worker_thinking: &worker_thinking,
+            registry: &registry,
+            planner_registry: &registry,
+            ctx: &ctx,
+            approver: &Yes,
+            events,
+            cancel: CancellationToken::new(),
+            allowed: HashSet::new(),
+            when: PlanWhen::Always,
+            review_rounds: 2,
+            confirm: Confirm::Never,
+            lead: String::new(),
+            window: crate::config::DEFAULT_WINDOW,
+            digest: None,
+        };
+        let mut messages = vec![Message::System("sys".into())];
+        let out = tandem
+            .run("say new", Mode::Plan, &mut messages)
+            .await
+            .unwrap();
+        drop(tandem);
+
+        let brief = reviewer.seen.lock().unwrap()[0].clone();
+        assert!(
+            brief.contains("## New tests, run without the change")
+                && brief.contains("`check.test.js:1` \"says new\": fails without the change")
+                && brief.contains("\"keeps the rest\": passes without the change"),
+            "{brief}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("code.txt")).unwrap(),
+            "new\n",
+            "the run was in a copy"
+        );
+        let report = out.report.expect("a report");
+        assert!(report.complete, "{:?}", report.problems);
+        assert_eq!(report.done_when[0].without, Some(Without::Fails));
+        assert_eq!(report.done_when[1].without, Some(Without::Passes));
+        assert_eq!(report.headline(), "plan complete · 1 thing to look at");
+        assert_eq!(report.review, "approved");
+        let mut finished = false;
+        while let Ok(evt) = rx.try_recv() {
+            finished |= matches!(evt, AgentEvent::Finished { .. });
+        }
+        assert!(finished, "the card was sent to the screen");
+    }
+
+    #[test]
+    fn earlier_asks_not_made_again_are_settled() {
+        let list = vec![
+            Todo::pending("step"),
+            Todo::pending("Fix: a"),
+            Todo::pending("Fix: b"),
+            Todo::pending("Fix: from an earlier task"),
+        ];
+        let asked = ["Fix: a".to_string(), "Fix: b".to_string()];
+        let list = settle(list, &asked, &["Fix: b".into(), "Fix: c".into()]);
+        let shown: Vec<(&str, bool)> = list
+            .iter()
+            .map(|t| (t.text.as_str(), t.is_open()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("step", true),
+                ("Fix: a", false),
+                ("Fix: b", true),
+                ("Fix: from an earlier task", true),
+                ("Fix: c", true)
+            ]
         );
     }
 
