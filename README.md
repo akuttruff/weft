@@ -4,12 +4,14 @@ A coding agent for the terminal that runs local models in tandem through
 [LM Studio](https://lmstudio.ai). I built it in Rust in order to become better
 acquainted with the language.
 
-- **The planner**, a dense model at medium reasoning effort, writes a short
-  plan and later reviews the diff.
+- **The planner**, a dense model at medium reasoning effort, writes a plan
+  in two parts, what will change for you, which you approve, and the steps
+  for the worker, and later reviews the diff.
 - **The worker**, a fast mixture-of-experts model with thinking off, runs the
   tool loop: reads, searches, edits, runs commands, follows the plan.
 - **The scout**, a small model, answers the other two's questions about where
-  things live, and writes the note a long conversation is folded into.
+  things live, decides whether a task needs a plan, and writes the note a long
+  conversation is folded into.
 
 Built on a Mac Studio with `qwen/qwen3.8-27b` as the planner,
 `qwen3.5-122b-a10b` as the worker and `qwen/qwen3.5-9b` as the scout. Any
@@ -19,20 +21,28 @@ models LM Studio serves will do.
 
 Weft draws an input box at the bottom of the terminal and writes the
 transcript above it, into the terminal's own scrollback, so it is still there
-when you leave. Here it is on a React + Node monitoring board, given two
-tasks in a row: "sort the monitor tiles so anything that's alerting or warning
-comes first in its group", then "now add a test for that":
+when you leave. Here it is on a React + Node monitoring board, given "sort the
+monitor tiles so anything that's alerting or warning comes first in its
+group" (with `/plan`, so it plans whatever the task's size):
 
 ![a Weft session: a change, then a test for it](docs/weft.png)
 
-Each `⏺` line is a tool call with the first line of its result under it. An
-edit or a new file shows the code itself, removed lines in red and added lines
-in green, numbered as they sit in the file. The plan sits in a cyan gutter.
-The second task is understood against the first, because the planner is told
-what the session did before. Edits, new files and shell commands ask first,
-and one key answers:
+Each `⏺` line is a tool call with the first line of its result under it;
+looks asked for together run at once. An edit or a new file shows the code
+itself, removed lines in red and added lines in green, numbered as they sit
+in the file. The plan sits in a cyan gutter, and its steps and the tests its
+`Done when` asks for become the checklist, ticked off as the worker goes.
+When the worker is done, weft runs the project's checks itself, then the
+reviewer reads the diff, looking around the code with read-only tools. Here
+it found the plan's tests missing: the fix waits on the checklist, and
+"continue" picks it up. Edits, new files and shell commands ask first, and
+one key answers.
 
-![Weft asking before an edit](docs/approval.png)
+Every plan waits for your word. It opens with what will change for you, in
+the app's terms, and any choices to confirm; the worker's file-by-file steps
+fold to one line, and `/steps` opens them:
+
+![Weft waiting on a plan](docs/approval.png)
 
 **Keys**
 
