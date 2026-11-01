@@ -570,6 +570,7 @@ mod tests {
                 AgentEvent::Note { .. } => "note",
                 AgentEvent::Compacted { .. } => "compacted",
                 AgentEvent::Reasoning { .. } => "think",
+                AgentEvent::Todos { .. } => "todos",
                 AgentEvent::Phase { .. } | AgentEvent::Plan { .. } | AgentEvent::Review { .. } => {
                     "other"
                 }

@@ -124,6 +124,18 @@ impl App {
             {
                 s.push_str(&format!(" · ~{} thinking tokens", view::k(n as u32)));
             }
+            // Where the work is: the step under way, then the tool running now.
+            let (done, total) = todo::progress(&self.todos);
+            if let Some(t) = self.todos.iter().find(|t| t.status == Status::InProgress) {
+                s.push_str(&format!(
+                    " · {}/{total} {}",
+                    done + 1,
+                    view::clip(&t.text, 40)
+                ));
+            }
+            if let Some(doing) = &r.doing {
+                s.push_str(&format!(" · {}", view::clip(doing, 50)));
+            }
             return Line::from(vec![
                 Span::styled(
                     format!("{} ", SPINNER[self.frame % SPINNER.len()]),

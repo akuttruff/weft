@@ -36,6 +36,8 @@ use ratatui::widgets::{Block, BorderType, Paragraph, Widget, Wrap};
 use ratatui::{TerminalOptions, Viewport};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+
+use crate::tools::todo::{self, Status, Todo};
 use unicode_width::UnicodeWidthStr;
 
 use crate::agent::compact::Compacted;
@@ -67,6 +69,11 @@ const COMMANDS: &[(&str, &str, bool)] = &[
     ("/compact", "fold earlier tasks into a note", false),
     ("/undo", "put back the files the last task changed", false),
     ("/resume", "pick up an earlier session", true),
+    (
+        "/todos",
+        "the worker's checklist; /todos clear empties it",
+        true,
+    ),
     ("/memory", "what weft has kept about this project", false),
     ("/cost", "tokens used this session", false),
     ("/mcp", "MCP servers and their tools", false),
@@ -188,6 +195,8 @@ struct Running {
     text: String,
     /// Whether the current answer block has had its `⏺` line yet.
     answer_open: bool,
+    /// The tool running now, as its transcript line says it, for the status line.
+    doing: Option<String>,
     cancel: CancellationToken,
 }
 
@@ -229,6 +238,8 @@ struct App {
     sessions: Vec<Saved>,
     /// The listing was the last thing shown, so a bare number picks from it.
     picking_session: bool,
+    /// The worker's checklist as last heard, for the status line and `/todos`.
+    todos: Vec<Todo>,
 }
 
 /// How the screen was left: for good, or to be started again on the same
@@ -369,6 +380,7 @@ impl App {
             nested: 0,
             sessions: Vec::new(),
             picking_session: false,
+            todos: Vec::new(),
         }
     }
 

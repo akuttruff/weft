@@ -10,6 +10,7 @@ pub mod files;
 pub mod image;
 pub mod memory;
 pub mod search;
+pub mod todo;
 
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
@@ -41,6 +42,9 @@ pub struct Ctx {
     /// Tools approved for the whole session, shared so a helper's `always`
     /// counts for the rest of the session too.
     pub allowed: Arc<Mutex<HashSet<String>>>,
+    /// The worker's checklist, kept for the session: the `todo` tool writes
+    /// it, the tandem seeds it from the plan and checks it at the end.
+    pub todos: todo::Todos,
 }
 
 impl std::fmt::Debug for Ctx {
@@ -58,11 +62,13 @@ impl Ctx {
             checkpoint: None,
             approver: None,
             allowed: Arc::default(),
+            todos: Arc::default(),
         }
     }
 
     /// The same folder, tied to one task's stop signal and event stream.
-    /// `with_checkpoint` and `with_approver` add the rest.
+    /// `with_checkpoint` and `with_approver` add the rest; the checklist is
+    /// the session's, so it carries over.
     pub fn for_task(&self, events: Option<Events>, cancel: CancellationToken) -> Self {
         Self {
             root: self.root.clone(),
@@ -71,6 +77,7 @@ impl Ctx {
             checkpoint: None,
             approver: None,
             allowed: Arc::default(),
+            todos: self.todos.clone(),
         }
     }
 

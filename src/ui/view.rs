@@ -7,7 +7,8 @@ use unicode_width::UnicodeWidthChar;
 
 use super::diff::{Kind, Row};
 use crate::lm::Usage;
-use crate::mcp::Status;
+use crate::mcp::Status as McpStatus;
+use crate::tools::todo::{self, Status, Todo};
 use crate::transcript::Saved;
 
 /// `> what the user typed`
@@ -121,6 +122,9 @@ pub fn replay_lines(saved: &Saved) -> Vec<Line<'static>> {
         lines.extend(note_line("  the plan from last time:"));
         lines.extend(plan_lines(plan));
     }
+    if saved.todos.iter().any(Todo::is_open) {
+        lines.extend(todo_lines(&saved.todos));
+    }
     lines
 }
 
@@ -132,7 +136,7 @@ pub fn when(at: &str) -> String {
     }
 }
 
-fn clip(s: &str, max: usize) -> String {
+pub fn clip(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
@@ -146,6 +150,41 @@ pub fn phase_line(name: &str) -> Vec<Line<'static>> {
         Span::styled("✻ ", Style::new().fg(Color::Magenta)),
         Span::styled(name.to_string(), Style::new().bold()),
     ])]
+}
+
+/// The checklist, as Claude Code shows it: a heading with the count, then
+/// `☒` done (struck through), `◼` under way (bold), `☐` not started.
+pub fn todo_lines(items: &[Todo]) -> Vec<Line<'static>> {
+    if items.is_empty() {
+        return vec![Line::from(vec![
+            Span::styled("⏺ ", Style::new().fg(Color::Green)),
+            Span::raw("Todos cleared"),
+        ])];
+    }
+    let (done, total) = todo::progress(items);
+    let mut out = vec![Line::from(vec![
+        Span::styled("⏺ ", Style::new().fg(Color::Green)),
+        Span::raw("Todos "),
+        Span::styled(format!("{done} of {total} done"), Style::new().dim()),
+    ])];
+    for (i, t) in items.iter().enumerate() {
+        let style = match t.status {
+            Status::Done => Style::new().dim().add_modifier(Modifier::CROSSED_OUT),
+            Status::InProgress => Style::new().bold(),
+            Status::Pending => Style::new(),
+        };
+        let mark = match t.status {
+            Status::InProgress => Style::new().fg(Color::Magenta),
+            Status::Done => Style::new().fg(Color::Green),
+            Status::Pending => Style::new().dim(),
+        };
+        out.push(Line::from(vec![
+            Span::styled(if i == 0 { "  ⎿ " } else { "    " }, Style::new().dim()),
+            Span::styled(format!("{} ", t.mark()), mark),
+            Span::styled(t.text.clone(), style),
+        ]));
+    }
+    out
 }
 
 /// `⏺ Read src/cli.js`
@@ -198,7 +237,7 @@ pub fn result_line(ok: bool, output: &str, tool: &str) -> Vec<Line<'static>> {
 }
 
 /// One dim line at startup: `mcp: deep-research 4 tools · notes failed`.
-pub fn mcp_summary(servers: &[Status]) -> Vec<Line<'static>> {
+pub fn mcp_summary(servers: &[McpStatus]) -> Vec<Line<'static>> {
     let mut spans = vec![Span::styled("mcp: ", Style::new().dim())];
     for (i, s) in servers.iter().enumerate() {
         if i > 0 {
@@ -224,7 +263,7 @@ pub fn mcp_summary(servers: &[Status]) -> Vec<Line<'static>> {
 }
 
 /// `/mcp`: each server with its tools, or why it is not there.
-pub fn mcp_lines(servers: &[Status]) -> Vec<Line<'static>> {
+pub fn mcp_lines(servers: &[McpStatus]) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     for s in servers {
         match &s.tools {
@@ -431,6 +470,47 @@ mod tests {
         assert_eq!(texts, ["see ", "a.rs", " and ", "this"]);
         assert_eq!(spans[1].style.fg, Some(Color::Cyan));
         assert!(spans[3].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn the_checklist_marks_each_step() {
+        let items = [
+            Todo {
+                text: "Add the op".into(),
+                status: Status::Done,
+            },
+            Todo {
+                text: "Teach the coach".into(),
+                status: Status::InProgress,
+            },
+            Todo::pending("Run the tests"),
+        ];
+        let lines = todo_lines(&items);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(
+            text,
+            [
+                "⏺ Todos 1 of 3 done",
+                "  ⎿ ☒ Add the op",
+                "    ◼ Teach the coach",
+                "    ☐ Run the tests"
+            ]
+        );
+        assert!(
+            lines[1].spans[2]
+                .style
+                .add_modifier
+                .contains(Modifier::CROSSED_OUT)
+        );
+        assert!(
+            lines[2].spans[2]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
     }
 
     #[test]

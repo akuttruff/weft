@@ -183,6 +183,8 @@ pub struct Saved {
     /// The plan written for the last task, if one was. A task stopped at its
     /// plan leaves no messages behind, so this is the only place it lives.
     pub last_plan: Option<String>,
+    /// The worker's checklist as it was last written.
+    pub todos: Vec<crate::tools::todo::Todo>,
 }
 
 /// Read one session file.
@@ -226,6 +228,9 @@ impl Saved {
                 if let AgentEvent::Plan { text } = &event {
                     self.last_plan = Some(text.clone());
                 }
+                if let AgentEvent::Todos { items } = &event {
+                    self.todos = items.clone();
+                }
                 if let AgentEvent::TurnEnd { role, usage, .. } = event {
                     match role {
                         Role::Planner => self.planner_usage = add(self.planner_usage, usage),
@@ -241,6 +246,7 @@ impl Saved {
             Record::Clear { at } => {
                 self.last = at;
                 self.messages.clear();
+                self.todos.clear();
                 self.context = 0;
             }
             Record::Replace { at, messages, .. } => {

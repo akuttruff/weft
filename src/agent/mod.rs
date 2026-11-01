@@ -132,6 +132,10 @@ pub enum AgentEvent {
         after: u32,
         tasks: usize,
     },
+    /// The worker's checklist changed: the whole list as it now stands.
+    Todos {
+        items: Vec<crate::tools::todo::Todo>,
+    },
 }
 
 pub type Events = mpsc::Sender<AgentEvent>;
@@ -207,6 +211,7 @@ pub fn call_summary(name: &str, args: &serde_json::Value) -> String {
             let task: String = s("task").chars().take(80).collect();
             format!("Delegate {task}")
         }
+        "todo" => "Update Todos".to_string(),
         "edit_file" => format!("Edit {}", s("path")),
         "write_file" => format!("Write {}", s("path")),
         "bash" => format!("Bash {}", s("command").lines().next().unwrap_or("")),

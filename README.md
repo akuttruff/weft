@@ -63,6 +63,7 @@ a word, and so on.
 | `/resume` | lists this folder's earlier sessions; a number, or `/resume 2`, picks one up |
 | `/restart` | leaves and comes straight back to this session, on the installed build |
 | `/think` | toggles the worker's thinking |
+| `/todos` | the worker's checklist; `/todos clear` empties it |
 | `/memory` | what weft has kept about this project |
 | `/cost` | tokens used this session |
 | `/mcp` | the MCP servers and their tools |
@@ -79,18 +80,26 @@ a word, and so on.
 3. **Plan.** The planner looks at the code with read-only tools, or asks the
    scout, then writes a short plan: the files and changes, the one command
    that verifies, and the pitfalls it noticed.
-4. **Work.** The worker follows the plan with the full tool set, runs the
-   check, and reports what changed as `path:line`.
-5. **Review.** If files were touched, the planner model reads the diff against
-   the task and the plan and answers `APPROVE` or `FIX` with a numbered list.
-   On `FIX` the worker goes again, this time with its thinking on. One review
-   round by default.
+4. **Work.** The plan's steps become the worker's checklist, shown as it
+   goes (`☒` done, `◼` under way, `☐` not started); the status line names the
+   step under way and the tool running now. The worker follows the plan with
+   the full tool set, runs the check, and reports what changed as `path:line`.
+   If it answers with steps still open, it is sent back, up to twice, to
+   finish them or say why it cannot.
+5. **Review.** If files were touched, by the edit tools or through `bash`
+   (git shows what changed), the planner model reads the diff against the
+   task and the plan and answers `APPROVE` or `FIX` with a numbered list. The
+   asks join the checklist. On `FIX` the worker goes again, this time with its
+   thinking on. One review round by default.
 
 Tasks given one after another share the worker's conversation, so "now do the
 same for X" works. A task that reaches its cap of 120 tool rounds ends with
 a report of what is done and what is left, and "continue" picks it up. A task that stops early, by esc or by running out of
 room, keeps the steps it finished, closed with a line saying why, so the next
-task or a resume can carry on from them.
+task or a resume can carry on from them. The checklist lasts the session (and
+comes back with `/resume`): a task that ends with steps open lists them under
+its summary line, and the next task is shown them, so "continue" picks up at
+the first open one.
 
 **Large work runs in rounds.** When the plan spans more than a few files,
 the planner adds a `## Tasks` section and the worker does them one at a time.
@@ -342,6 +351,7 @@ full path. `pkill`, `killall` and force pushes are never run.
 | `delegate` | one self-contained piece of the task, done by a fresh worker that reports back |
 | `see_image` | a description of, or an answer about, an image file, from a vision model |
 | `remember` | one fact about the project, kept for later tasks and sessions |
+| `todo` | the worker's checklist for work of several steps, shown as it goes |
 | `server__tool` | any tool of a configured MCP server; asks first |
 
 ## Reading the code to learn Rust

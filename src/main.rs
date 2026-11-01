@@ -645,6 +645,11 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
                 args,
                 ..
             } => {
+                // The checklist prints itself once written; see `Todos`.
+                if name == "todo" {
+                    last_call = (name, args);
+                    continue;
+                }
                 last_call = (name, args);
                 if dim {
                     print!("\x1b[0m");
@@ -656,6 +661,7 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
                 print!("\x1b[32m⏺\x1b[0m {summary}");
                 at_line_start = false;
             }
+            AgentEvent::ToolDone { ok: true, .. } if last_call.0 == "todo" => {}
             AgentEvent::ToolDone { ok, output, .. } => {
                 let first = output
                     .lines()
@@ -678,6 +684,21 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
                 at_line_start = true;
             }
             AgentEvent::Note { text } => println!("\x1b[2m  {text}\x1b[0m"),
+            AgentEvent::Todos { items } => {
+                if dim {
+                    print!("\x1b[0m");
+                    dim = false;
+                }
+                if !at_line_start {
+                    println!();
+                }
+                let (done, total) = weft::tools::todo::progress(&items);
+                println!("\x1b[32m⏺\x1b[0m Todos \x1b[2m{done} of {total} done\x1b[0m");
+                for t in &items {
+                    println!("    {} {}", t.mark(), t.text);
+                }
+                at_line_start = true;
+            }
             AgentEvent::Step { n, of, text } => {
                 println!("\x1b[35m✻\x1b[0m \x1b[1mstep {n} of {of}\x1b[0m · {text}");
             }

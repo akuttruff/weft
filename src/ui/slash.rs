@@ -54,6 +54,7 @@ impl App {
             }),
             "/clear" => {
                 self.session.clear();
+                self.todos.clear();
                 self.push(view::note_line("fresh conversation"));
             }
             "/compact" => self.compact(tx),
@@ -108,6 +109,23 @@ impl App {
                 view::k(self.context),
                 view::k(self.session.window),
             ))),
+            "/todos" if rest == "clear" => {
+                if self.running.is_some() {
+                    self.push(view::note_line("a task is running; esc stops it"));
+                } else {
+                    self.session.clear_todos();
+                    self.todos.clear();
+                    self.push(view::note_line("the checklist is empty"));
+                }
+            }
+            "/todos" => {
+                if self.todos.is_empty() {
+                    self.push(view::note_line("no checklist; the worker keeps one for work of several steps"));
+                } else {
+                    let lines = view::todo_lines(&self.todos);
+                    self.push_with(lines, vec![Span::raw("      ")]);
+                }
+            }
             "/memory" => {
                 let file = self.session.memory_file();
                 let text = file
@@ -209,6 +227,7 @@ impl App {
             turn: None,
             text: String::new(),
             answer_open: false,
+            doing: None,
             cancel: cancel.clone(),
         });
         let session = self.session.clone();
@@ -251,6 +270,7 @@ impl App {
         self.scout_usage = saved.scout_usage;
         self.context = saved.context;
         self.tasks = saved.tasks.len();
+        self.todos = saved.todos.clone();
         self.push(view::replay_lines(&saved));
     }
 
@@ -292,6 +312,7 @@ impl App {
             turn: None,
             text: String::new(),
             answer_open: false,
+            doing: None,
             cancel: cancel.clone(),
         });
 

@@ -12,10 +12,17 @@ use super::worker::{Outcome, Worker, WorkerError};
 use super::{AgentEvent, Approver, Events, Model, PlanDecision, Role, Yes, prompts};
 use crate::config::{Confirm, PlanWhen};
 use crate::lm::{Message, Usage};
+use crate::tools::todo::{self, Status, Todo};
 use crate::tools::{Ctx, Registry};
 
 /// Tool rounds the planner gets to look around before it must write the plan.
 const PLANNER_ROUNDS: usize = 8;
+/// Times the worker is sent back to finish open todos before the task ends.
+const CARRY_ON_ROUNDS: usize = 2;
+/// A checklist line is cut here, in characters.
+const ITEM_CHARS: usize = 160;
+/// What a reviewer's ask starts with on the checklist.
+const FIX: &str = "Fix: ";
 /// The diff shown to the reviewer is cut here, in characters.
 const DIFF_LIMIT: usize = 30_000;
 /// How many times the user may send a plan back with notes.
@@ -89,9 +96,22 @@ impl Tandem<'_> {
         let earlier = earlier(messages);
         let project = snapshot(&self.ctx.root);
         let git_before = git_changes(&self.ctx.root).await;
+        // Steps an earlier task left open go to every model, so "continue"
+        // picks them up rather than starting over.
+        let todos_at_start = self.todos();
+        let open_earlier: Vec<Todo> = todos_at_start
+            .iter()
+            .filter(|t| t.is_open())
+            .cloned()
+            .collect();
+        let carried = if open_earlier.is_empty() {
+            String::new()
+        } else {
+            prompts::carried_todos(&todo::checklist(&todos_at_start))
+        };
 
         // 1. Plan, if this task warrants one.
-        let context = format!("{project}{}", earlier.as_deref().unwrap_or(""));
+        let context = format!("{project}{}{carried}", earlier.as_deref().unwrap_or(""));
         let plan = match self.should_plan(task, Some(&context), mode).await? {
             false => None,
             true => {
@@ -155,23 +175,39 @@ impl Tandem<'_> {
 
         out.plan = plan.clone();
 
+        // The plan's steps become the checklist, so the user sees them ticked
+        // off even when the worker forgets to keep one.
+        let steps = plan.as_deref().map(steps_of).unwrap_or_default();
+        let seeded = match plan.as_deref().map(plan_items) {
+            Some(items) if !items.is_empty() => {
+                todo::set(self.ctx, items.into_iter().map(Todo::pending).collect()).await;
+                true
+            }
+            _ => false,
+        };
+
         // 2. Work.
         self.phase("working").await;
         // The worker sees the project note on its first task; after that the
         // conversation carries it.
         let fresh = !messages.iter().any(|m| matches!(m, Message::User(_)));
-        let lead = if fresh {
+        let mut lead = if fresh {
             project.clone()
         } else {
             self.lead.clone()
         };
+        if seeded {
+            lead.push_str(prompts::SEEDED_TODOS);
+        } else {
+            lead.push_str(&carried);
+        }
         messages.push(Message::User(task_message(&lead, task, plan.as_deref())));
         // A plan with a `## Tasks` section runs as rounds: the worker does
         // one, answers, and gets the next, so each starts with a fresh look
         // at the code and the window is trimmed between them.
-        let steps = plan.as_deref().map(steps_of).unwrap_or_default();
         if steps.len() >= 2 {
             for (i, step) in steps.iter().enumerate() {
+                self.mark(i, step, Status::InProgress).await;
                 self.emit(AgentEvent::Step {
                     n: i + 1,
                     of: steps.len(),
@@ -191,6 +227,7 @@ impl Tandem<'_> {
                 let step_from = messages.len();
                 let done = self.work(self.worker, messages).await?;
                 out.take(&done);
+                self.mark(i, step, Status::Done).await;
                 // A finished round's steps fold into a note before the next
                 // begins, so the window carries a summary of each round, not
                 // its every read and edit. The round's answer stays.
@@ -212,6 +249,8 @@ impl Tandem<'_> {
         } else {
             let done = self.work(self.worker, messages).await?;
             out.take(&done);
+            self.carry_on(self.worker, messages, &todos_at_start, &mut out)
+                .await?;
         }
 
         // 3. Review what was changed, and send the worker back if asked.
@@ -257,18 +296,93 @@ impl Tandem<'_> {
             .await;
             out.reviews.push((approved, text.clone()));
             if approved {
+                // An approved diff settles what the reviewer asked for before.
+                let mut list = self.todos();
+                let mut settled = false;
+                for t in list
+                    .iter_mut()
+                    .filter(|t| t.is_open() && t.text.starts_with(FIX))
+                {
+                    t.status = Status::Done;
+                    settled = true;
+                }
+                if settled {
+                    todo::set(self.ctx, list).await;
+                }
                 break;
             }
+            // The reviewer's asks join the checklist: ticked off in the fix
+            // round, or left open for the next task when no round is left.
+            let mut list = self.todos();
+            list.extend(
+                numbered(&text)
+                    .into_iter()
+                    .map(|fix| Todo::pending(clip(&format!("{FIX}{fix}"), ITEM_CHARS))),
+            );
+            todo::set(self.ctx, list).await;
             if round == self.review_rounds {
                 out.fixes_pending = true;
                 break;
             }
             self.phase("fixing").await;
+            let before_fix = self.todos();
             messages.push(Message::User(format!("{}\n\n{text}", prompts::WORKER_FIX)));
             let fixed = self.work(self.worker_thinking, messages).await?;
             out.take(&fixed);
+            self.carry_on(self.worker_thinking, messages, &before_fix, &mut out)
+                .await?;
         }
         Ok(out)
+    }
+
+    /// The session's checklist as it stands.
+    fn todos(&self) -> Vec<Todo> {
+        self.ctx.todos.lock().unwrap().clone()
+    }
+
+    /// Set the status of step `i`, `step`, when the list still has it there.
+    async fn mark(&self, i: usize, step: &str, status: Status) {
+        let mut list = self.todos();
+        if let Some(t) = list.get_mut(i)
+            && t.text == clip(step, ITEM_CHARS)
+        {
+            t.status = status;
+            todo::set(self.ctx, list).await;
+        }
+    }
+
+    /// The worker stopped with steps open on a list this task changed: send it
+    /// back to finish them or say why it cannot, rather than end quietly
+    /// halfway. A list it did not touch (a question about something else)
+    /// is left alone, and a round that moves nothing on ends the asking.
+    async fn carry_on(
+        &mut self,
+        model: &dyn Model,
+        messages: &mut Vec<Message>,
+        at_start: &[Todo],
+        out: &mut TandemOutcome,
+    ) -> Result<(), WorkerError> {
+        for _ in 0..CARRY_ON_ROUNDS {
+            let now = self.todos();
+            let open = now.iter().filter(|t| t.is_open()).count();
+            if open == 0 || now == at_start {
+                return Ok(());
+            }
+            self.emit(AgentEvent::Note {
+                text: format!(
+                    "{open} todo{} still open; the worker carries on",
+                    if open == 1 { "" } else { "s" }
+                ),
+            })
+            .await;
+            messages.push(Message::User(prompts::open_todos(&todo::checklist(&now))));
+            let done = self.work(model, messages).await?;
+            out.take(&done);
+            if self.todos() == now {
+                return Ok(());
+            }
+        }
+        Ok(())
     }
 
     async fn should_plan(
@@ -363,12 +477,32 @@ impl TandemOutcome {
 
 /// The numbered lines under a plan's `## Tasks` heading, if it has one.
 pub fn steps_of(plan: &str) -> Vec<String> {
-    let Some((_, after)) = plan.split_once("## Tasks") else {
-        return Vec::new();
+    numbered(section(plan, "## Tasks"))
+}
+
+/// The checklist a plan makes: its tasks when it has some, else the steps
+/// of the plan itself, each cut to a line.
+pub fn plan_items(plan: &str) -> Vec<String> {
+    let tasks = steps_of(plan);
+    let items = if tasks.len() >= 2 {
+        tasks
+    } else {
+        numbered(section(plan, "## Plan"))
     };
-    let section = after.split("\n## ").next().unwrap_or("");
-    section
-        .lines()
+    items.iter().map(|s| clip(s, ITEM_CHARS)).collect()
+}
+
+/// The text under `heading`, up to the next heading; empty without one.
+fn section<'p>(plan: &'p str, heading: &str) -> &'p str {
+    match plan.split_once(heading) {
+        Some((_, after)) => after.split("\n## ").next().unwrap_or(""),
+        None => "",
+    }
+}
+
+/// `1. a` and `2) b` lines, without their numbers.
+fn numbered(text: &str) -> Vec<String> {
+    text.lines()
         .map(str::trim)
         .filter_map(|l| {
             let rest = l.trim_start_matches(|c: char| c.is_ascii_digit());
@@ -754,7 +888,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
         let ctx = Ctx::new(dir.path().to_path_buf());
-        let registry = Registry::builtin();
+        let mut registry = Registry::builtin();
+        registry.extend(vec![Box::new(crate::tools::todo::TodoWrite)]);
 
         let planner = Scripted::new(
             "planner",
@@ -775,6 +910,13 @@ mod tests {
                 Scripted::text("PLAN"),
                 Scripted::calls(vec![edit("a.txt", "one", "two")]),
                 Scripted::text("Changed to two."),
+                // Sent back: the plan's step is still open on the checklist.
+                Scripted::calls(vec![ToolCall {
+                    id: "t".into(),
+                    name: "todo".into(),
+                    arguments: json!({"todos": [{"text": "`a.txt`: say two", "status": "done"}]}),
+                }]),
+                Scripted::text("Ticked it off."),
             ],
         );
         let worker_thinking = Scripted::new(
@@ -826,6 +968,18 @@ mod tests {
         );
         assert!(!out.fixes_pending);
         assert_eq!(out.touched, vec!["a.txt"]);
+        // The plan's step was ticked off by the worker, the reviewer's ask by
+        // the approval that followed the fix.
+        let list = ctx.todos.lock().unwrap().clone();
+        assert_eq!(
+            list.iter()
+                .map(|t| (t.text.as_str(), t.status))
+                .collect::<Vec<_>>(),
+            [
+                ("`a.txt`: say two", Status::Done),
+                ("Fix: `a.txt`: it should say three, not two", Status::Done)
+            ]
+        );
         assert_eq!(
             std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
             "three\n"
@@ -866,6 +1020,13 @@ mod tests {
         assert_eq!(
             phases,
             ["planning", "working", "reviewing", "fixing", "reviewing"]
+        );
+        let seen = worker.seen.lock().unwrap().clone();
+        assert!(
+            seen[3].starts_with("## Open todos\nYou answered")
+                && seen[3].contains("☐ `a.txt`: say two"),
+            "{}",
+            seen[3]
         );
     }
 
@@ -914,7 +1075,15 @@ mod tests {
         let registry = Registry::builtin();
         let planner = Scripted::new("planner", vec![Scripted::text("## Plan\n1. add a test")]);
         let reviewer = Scripted::new("reviewer", vec![]);
-        let worker = Scripted::new("worker", vec![Scripted::text("Added the test.")]);
+        // The step is left open, so the worker is asked once more; a round
+        // that changes nothing ends the asking.
+        let worker = Scripted::new(
+            "worker",
+            vec![
+                Scripted::text("Added the test."),
+                Scripted::text("It is in."),
+            ],
+        );
         let (events, _rx) = mpsc::channel(64);
         let mut tandem = Tandem {
             planner: &planner,
@@ -1021,6 +1190,76 @@ mod tests {
             s.starts_with("## Project\n") && s.contains("## Project notes"),
             "{s}"
         );
+    }
+
+    #[test]
+    fn the_checklist_comes_from_the_tasks_or_else_the_plan() {
+        assert_eq!(
+            plan_items("## Plan\n1. `a.rs`: x\n2. `b.rs`: y\n\n## Verify\ncargo test"),
+            ["`a.rs`: x", "`b.rs`: y"]
+        );
+        assert_eq!(
+            plan_items("## Plan\n1. big\n\n## Tasks\n1. First.\n2. Second."),
+            ["First.", "Second."]
+        );
+        assert!(plan_items("Just look at it.").is_empty());
+    }
+
+    #[tokio::test]
+    async fn open_todos_from_before_reach_the_planner_and_a_question_is_not_pushed() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(dir.path().to_path_buf());
+        *ctx.todos.lock().unwrap() = vec![
+            Todo {
+                text: "Remove the widget".into(),
+                status: Status::Done,
+            },
+            Todo::pending("Teach the coach"),
+        ];
+        let registry = Registry::builtin();
+        let planner = Scripted::new("planner", vec![]);
+        // Asked about something else, the worker answers once: the list it
+        // did not touch is not a reason to send it back.
+        let worker = Scripted::new("worker", vec![Scripted::text("GO"), Scripted::text("No.")]);
+        let (events, _rx) = mpsc::channel(64);
+        let mut tandem = Tandem {
+            planner: &planner,
+            reviewer: &planner,
+            worker: &worker,
+            worker_thinking: &worker,
+            registry: &registry,
+            planner_registry: &registry,
+            ctx: &ctx,
+            approver: &Yes,
+            events,
+            cancel: CancellationToken::new(),
+            allowed: HashSet::new(),
+            when: PlanWhen::Auto,
+            review_rounds: 1,
+            confirm: Confirm::Never,
+            lead: String::new(),
+            window: crate::config::DEFAULT_WINDOW,
+            digest: None,
+        };
+        let mut messages = vec![Message::System("sys".into())];
+        let out = tandem
+            .run("did you restart it?", Mode::Auto, &mut messages)
+            .await
+            .unwrap();
+        assert_eq!(out.answer, "No.");
+        let seen = worker.seen.lock().unwrap().clone();
+        assert!(
+            seen[0].contains("## Open todos\nAn earlier task")
+                && seen[0].contains("☐ Teach the coach"),
+            "triage: {}",
+            seen[0]
+        );
+        assert!(
+            seen[1].contains("☒ Remove the widget\n☐ Teach the coach"),
+            "worker: {}",
+            seen[1]
+        );
+        assert_eq!(seen.len(), 2);
     }
 
     #[test]

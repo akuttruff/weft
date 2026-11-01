@@ -95,7 +95,13 @@ impl App {
                 args,
             } => {
                 self.flush_text();
-                self.push(view::tool_line(&summary));
+                if let Some(r) = &mut self.running {
+                    r.doing = Some(summary.clone());
+                }
+                // The checklist shows itself once it is written; see `Todos`.
+                if name != "todo" {
+                    self.push(view::tool_line(&summary));
+                }
                 if name == "delegate" {
                     self.nested += 1;
                 }
@@ -105,6 +111,19 @@ impl App {
                 let (tool, args) = self.calls.remove(&id).unwrap_or_default();
                 if tool == "delegate" {
                     self.nested = self.nested.saturating_sub(1);
+                }
+                if let Some(r) = &mut self.running {
+                    r.doing = None;
+                }
+                if tool == "todo" {
+                    if !ok {
+                        self.push(view::tool_line("Update Todos"));
+                        self.push_with(
+                            view::result_line(false, &output, &tool),
+                            vec![Span::raw("    ")],
+                        );
+                    }
+                    return;
                 }
                 let (tool, args) = (&tool, &args);
                 let line = view::result_line(ok, &output, tool);
@@ -121,6 +140,11 @@ impl App {
                         vec![Span::raw(view::DIFF_INDENT)],
                     );
                 }
+            }
+            AgentEvent::Todos { items } => {
+                self.flush_text();
+                self.push_with(view::todo_lines(&items), vec![Span::raw("      ")]);
+                self.todos = items;
             }
             AgentEvent::Plan { text } => self.push_with(
                 view::plan_lines(&text),
@@ -201,12 +225,29 @@ impl App {
                 } else {
                     format!(" · {}", out.touched.join(", "))
                 };
+                let (done, total) = todo::progress(&self.todos);
+                let todos = if total == 0 {
+                    String::new()
+                } else {
+                    format!(" · todos {done}/{total}")
+                };
                 self.push(view::note_line(&format!(
-                    "  {} · planner {} · worker {} tokens{touched}{review}",
+                    "  {} · planner {} · worker {} tokens{todos}{touched}{review}",
                     view::clock(secs),
                     view::k(view::total(out.planner_usage)),
                     view::k(view::total(out.worker_usage)),
                 )));
+                // What is left, so a stop halfway is plain to see.
+                let open: Vec<Todo> = self.todos.iter().filter(|t| t.is_open()).cloned().collect();
+                if !open.is_empty() {
+                    self.push(view::note_line(&format!(
+                        "  still open ({}); say \"continue\" to carry on:",
+                        open.len()
+                    )));
+                    for t in open {
+                        self.push(view::note_line(&format!("    {} {}", t.mark(), t.text)));
+                    }
+                }
             }
             Err(WorkerError::Cancelled) => self.push(view::error_line("  ⎿ Interrupted")),
             Err(e) => self.push(view::error_line(&format!("  ⎿ {e:#}"))),

@@ -24,6 +24,7 @@ use crate::lm::raw::RawModel;
 use crate::mcp;
 use crate::models::Models;
 use crate::tools::memory;
+use crate::tools::todo::TodoWrite;
 use crate::tools::{Ctx, Registry, Rules};
 use crate::transcript::{self, Record, Saved, Transcript};
 
@@ -88,6 +89,8 @@ impl Session {
             .with_rules(config.approve.clone())
             .with_hooks(config.hooks.clone());
         registry.extend(models.extra_tools(&root));
+        // The checklist is the worker's own; helpers and the planner keep none.
+        registry.extend(vec![Box::new(TodoWrite)]);
         let mut planner_registry = Registry::read_only();
         planner_registry.extend(models.extra_tools(&root));
         Self {
@@ -162,6 +165,7 @@ impl Session {
         let mut messages = vec![Message::System(prompts::WORKER.into())];
         messages.extend(saved.messages.iter().cloned());
         *self.messages.lock().unwrap() = messages;
+        *self.ctx.todos.lock().unwrap() = saved.todos.clone();
         *self.transcript.lock().unwrap() = Some(Arc::new(t));
         *self.fresh_transcript.lock().unwrap() = false;
         let mut lead = format!(
@@ -514,8 +518,18 @@ impl Session {
     /// Forget the conversation, keep the approvals.
     pub fn clear(&self) {
         self.messages.lock().unwrap().truncate(1);
+        self.ctx.todos.lock().unwrap().clear();
         self.record(Record::Clear {
             at: transcript::now(),
+        });
+    }
+
+    /// `/todos clear`: an empty checklist, written down so a resume agrees.
+    pub fn clear_todos(&self) {
+        self.ctx.todos.lock().unwrap().clear();
+        self.record(Record::Event {
+            at: transcript::now(),
+            event: AgentEvent::Todos { items: Vec::new() },
         });
     }
 
