@@ -27,6 +27,31 @@ pub struct Config {
     pub hooks: Vec<Hook>,
     #[serde(default)]
     pub vision: Vision,
+    /// Settings for one folder: `[[project]]`, matched by `path`.
+    #[serde(default, rename = "project")]
+    pub projects: Vec<Project>,
+}
+
+/// What weft knows about one project without anything in its repository.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Project {
+    /// The project's folder; `~/` is the home folder.
+    pub path: String,
+    /// The checks weft runs itself once the worker is done, a shell line:
+    /// `npx tsc --noEmit && npx vitest run`. A failure goes back to the worker.
+    #[serde(default)]
+    pub verify: Option<String>,
+    /// Seconds the checks may take before they count as failed.
+    #[serde(default = "default_verify_timeout")]
+    pub verify_timeout_s: u64,
+    /// Standing instructions, shown to every model like a `WEFT.md`.
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+fn default_verify_timeout() -> u64 {
+    300
 }
 
 /// The model that looks at images for `see_image`: a vision model on the
@@ -172,6 +197,19 @@ fn default_url() -> String {
 }
 
 impl Config {
+    /// The `[[project]]` for `root`, if one names it.
+    pub fn project_for(&self, root: &Path) -> Option<&Project> {
+        let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let root = real(root);
+        self.projects.iter().find(|p| {
+            let path = match (p.path.strip_prefix("~/"), std::env::home_dir()) {
+                (Some(rest), Some(home)) => home.join(rest),
+                _ => PathBuf::from(&p.path),
+            };
+            real(&path) == root
+        })
+    }
+
     pub fn path() -> Result<PathBuf> {
         let home = std::env::home_dir().context("no home folder")?;
         Ok(home.join(".config/weft/config.toml"))
@@ -221,6 +259,30 @@ model = "qwen3.5-122b-a10b"
         assert!(config.hooks.is_empty());
         assert_eq!(config.vision.model, None);
         assert_eq!(config.vision.effort, Effort::Low);
+    }
+
+    #[test]
+    fn a_project_is_found_by_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = format!(
+            r#"
+[lm_studio]
+[planner]
+model = "p"
+[worker]
+model = "w"
+[[project]]
+path = "{}"
+verify = "npm test"
+notes = "Commits are one line."
+"#,
+            dir.path().display()
+        );
+        let config: Config = toml::from_str(&text).unwrap();
+        let p = config.project_for(dir.path()).unwrap();
+        assert_eq!(p.verify.as_deref(), Some("npm test"));
+        assert_eq!(p.verify_timeout_s, 300);
+        assert!(config.project_for(Path::new("/elsewhere")).is_none());
     }
 
     #[test]

@@ -115,6 +115,7 @@ impl App {
                 "working" => "Working",
                 "reviewing" => "Reviewing",
                 "fixing" => "Fixing",
+                "checking" => "Running the checks",
                 "compacting" => "Compacting",
                 _ => "Thinking about it",
             };

@@ -12,6 +12,7 @@ use super::worker::{Outcome, Worker, WorkerError};
 use super::{AgentEvent, Approver, Events, Model, PlanDecision, Role, Yes, prompts};
 use crate::config::{Confirm, PlanWhen};
 use crate::lm::{Message, Usage};
+use crate::tools::bash::run_shell;
 use crate::tools::todo::{self, Status, Todo};
 use crate::tools::{Ctx, Registry};
 
@@ -19,10 +20,19 @@ use crate::tools::{Ctx, Registry};
 const PLANNER_ROUNDS: usize = 8;
 /// Times the worker is sent back to finish open todos before the task ends.
 const CARRY_ON_ROUNDS: usize = 2;
+/// Times a failing check goes back to the worker before the task moves on.
+const CHECK_FIXES: usize = 3;
+/// Lines of a check's output passed on: the end, where the failures and the
+/// summary are.
+const CHECK_LINES: usize = 80;
+/// Tool rounds the reviewer gets to look past the diff.
+const REVIEW_ROUNDS: usize = 6;
 /// A checklist line is cut here, in characters.
 const ITEM_CHARS: usize = 160;
 /// What a reviewer's ask starts with on the checklist.
 const FIX: &str = "Fix: ";
+/// What a `## Done when` line starts with on the checklist.
+const TEST: &str = "Test: ";
 /// The diff shown to the reviewer is cut here, in characters.
 const DIFF_LIMIT: usize = 30_000;
 /// How many times the user may send a plan back with notes.
@@ -45,6 +55,9 @@ pub struct TandemOutcome {
     pub reviews: Vec<(bool, String)>,
     /// The reviewer asked for fixes after the last allowed round, so they were not made.
     pub fixes_pending: bool,
+    /// The project's checks, as they stood when the task ended: passed or
+    /// not. `None` when the project has none or nothing was changed.
+    pub checks: Option<bool>,
     pub touched: Vec<String>,
     pub rounds: usize,
     pub planner_usage: Usage,
@@ -94,7 +107,7 @@ impl Tandem<'_> {
         // The planner, the triage and the reviewer do not see the worker's
         // conversation, so "now add a test for that" needs the earlier exchange.
         let earlier = earlier(messages);
-        let project = snapshot(&self.ctx.root);
+        let project = snapshot(self.ctx);
         let git_before = git_changes(&self.ctx.root).await;
         // Steps an earlier task left open go to every model, so "continue"
         // picks them up rather than starting over.
@@ -116,12 +129,14 @@ impl Tandem<'_> {
             false => None,
             true => {
                 self.phase("planning").await;
-                let mut planner = self.looker(
-                    self.planner,
-                    self.planner_registry,
-                    Role::Planner,
-                    PLANNER_ROUNDS,
-                );
+                let mut planner = self
+                    .looker(
+                        self.planner,
+                        self.planner_registry,
+                        Role::Planner,
+                        PLANNER_ROUNDS,
+                    )
+                    .wrap_up_with(prompts::PLAN_NOW);
                 let mut convo = vec![
                     Message::System(prompts::PLANNER.into()),
                     Message::User(with_earlier(task, Some(&context))),
@@ -201,6 +216,9 @@ impl Tandem<'_> {
         } else {
             lead.push_str(&carried);
         }
+        if let Some(command) = &self.ctx.project.verify {
+            lead.push_str(&prompts::checks_note(command));
+        }
         messages.push(Message::User(task_message(&lead, task, plan.as_deref())));
         // A plan with a `## Tasks` section runs as rounds: the worker does
         // one, answers, and gets the next, so each starts with a fresh look
@@ -246,6 +264,10 @@ impl Tandem<'_> {
                     .await;
                 }
             }
+            // The rounds are ticked off as they end; the tests the plan's
+            // `Done when` asks for may still be open.
+            self.carry_on(self.worker, messages, &todos_at_start, &mut out)
+                .await?;
         } else {
             let done = self.work(self.worker, messages).await?;
             out.take(&done);
@@ -253,22 +275,12 @@ impl Tandem<'_> {
                 .await?;
         }
 
-        // 3. Review what was changed, and send the worker back if asked.
-        // Helpers' edits count too; the checkpoint saw every file the tools changed.
-        if let Some(cp) = &self.ctx.checkpoint {
-            for f in cp.files() {
-                if !out.touched.contains(&f) {
-                    out.touched.push(f);
-                }
-            }
-        }
-        // So do changes made through bash (an `rm`, a formatter): whatever git
-        // shows changed now that it did not before the task.
-        for f in changed_since(&git_before, &git_changes(&self.ctx.root).await) {
-            if !out.touched.contains(&f) {
-                out.touched.push(f);
-            }
-        }
+        // 3. The project's checks, run by weft itself: a failure goes back to
+        // the worker before any model reads the diff.
+        self.collect_touched(&git_before, &mut out).await;
+        let mut checks = self.check(messages, &git_before, &mut out).await?;
+
+        // 4. Review what was changed, and send the worker back if asked.
         let mut round = 0;
         while !out.touched.is_empty() && round < self.review_rounds {
             round += 1;
@@ -278,10 +290,19 @@ impl Tandem<'_> {
                 &with_earlier(task, Some(&context)),
                 plan.as_deref(),
                 &out.answer,
+                checks.as_deref(),
                 &diff,
             );
-            let empty = Registry::empty();
-            let mut reviewer = self.looker(self.reviewer, &empty, Role::Planner, 1);
+            // The reviewer may look past the diff: at the code around it, at
+            // what the changed code's neighbours do, for names left behind.
+            let mut reviewer = self
+                .looker(
+                    self.reviewer,
+                    self.planner_registry,
+                    Role::Planner,
+                    REVIEW_ROUNDS,
+                )
+                .wrap_up_with(prompts::REVIEW_NOW);
             let mut convo = vec![
                 Message::System(prompts::REVIEWER.into()),
                 Message::User(brief),
@@ -331,8 +352,96 @@ impl Tandem<'_> {
             out.take(&fixed);
             self.carry_on(self.worker_thinking, messages, &before_fix, &mut out)
                 .await?;
+            self.collect_touched(&git_before, &mut out).await;
+            checks = self.check(messages, &git_before, &mut out).await?;
         }
         Ok(out)
+    }
+
+    /// Every file the task changed: by the edit tools, by a helper (the
+    /// checkpoint saw them), or through bash (an `rm`, a formatter): whatever
+    /// git shows changed now that it did not before the task.
+    async fn collect_touched(&self, git_before: &HashSet<String>, out: &mut TandemOutcome) {
+        let mut found = self
+            .ctx
+            .checkpoint
+            .as_ref()
+            .map(|cp| cp.files())
+            .unwrap_or_default();
+        found.extend(changed_since(
+            git_before,
+            &git_changes(&self.ctx.root).await,
+        ));
+        for f in found {
+            if !out.touched.contains(&f) {
+                out.touched.push(f);
+            }
+        }
+    }
+
+    /// Run the project's checks (`verify` in its `[[project]]`) when the task
+    /// changed something; on a failure, send the output back to the worker
+    /// and try again, a few times. What the last run printed is returned for
+    /// the reviewer: `Some` with the command's result, `None` with no checks.
+    async fn check(
+        &mut self,
+        messages: &mut Vec<Message>,
+        git_before: &HashSet<String>,
+        out: &mut TandemOutcome,
+    ) -> Result<Option<String>, WorkerError> {
+        let Some(command) = self.ctx.project.verify.clone() else {
+            return Ok(None);
+        };
+        if out.touched.is_empty() {
+            return Ok(None);
+        }
+        let timeout = self.ctx.project.verify_timeout_s;
+        for attempt in 0..=CHECK_FIXES {
+            self.phase("checking").await;
+            let id = format!("checks-{attempt}");
+            self.emit(AgentEvent::ToolStart {
+                id: id.clone(),
+                name: "checks".into(),
+                summary: format!("Checks {command}"),
+                args: serde_json::json!({ "command": command }),
+            })
+            .await;
+            let ran = tokio::select! {
+                r = run_shell(&self.ctx.root, &command, timeout) => r,
+                _ = self.cancel.cancelled() => return Err(WorkerError::Cancelled),
+            };
+            let (ok, text) = match ran {
+                Ok(r) => (r.ok, r.text),
+                Err(e) => (false, format!("error: {e}\n")),
+            };
+            self.emit(AgentEvent::ToolDone {
+                id,
+                ok,
+                output: text.clone(),
+            })
+            .await;
+            out.checks = Some(ok);
+            let report = format!(
+                "`{command}` {}\n{}",
+                if ok { "passed" } else { "FAILED" },
+                tail_lines(&text, CHECK_LINES)
+            );
+            if ok || attempt == CHECK_FIXES {
+                return Ok(Some(report));
+            }
+            self.phase("fixing").await;
+            let before_fix = self.todos();
+            messages.push(Message::User(prompts::checks_failed(
+                &command,
+                &tail_lines(&text, CHECK_LINES),
+            )));
+            let fixed = self.work(self.worker_thinking, messages).await?;
+            out.take(&fixed);
+            self.carry_on(self.worker_thinking, messages, &before_fix, out)
+                .await?;
+            self.collect_touched(git_before, out).await;
+        }
+        Ok(None)
     }
 
     /// The session's checklist as it stands.
@@ -481,14 +590,20 @@ pub fn steps_of(plan: &str) -> Vec<String> {
 }
 
 /// The checklist a plan makes: its tasks when it has some, else the steps
-/// of the plan itself, each cut to a line.
+/// of the plan itself, then a test for each `## Done when` line, each cut
+/// to a line.
 pub fn plan_items(plan: &str) -> Vec<String> {
     let tasks = steps_of(plan);
-    let items = if tasks.len() >= 2 {
+    let mut items = if tasks.len() >= 2 {
         tasks
     } else {
         numbered(section(plan, "## Plan"))
     };
+    items.extend(
+        numbered(section(plan, "## Done when"))
+            .into_iter()
+            .map(|d| format!("{TEST}{d}")),
+    );
     items.iter().map(|s| clip(s, ITEM_CHARS)).collect()
 }
 
@@ -558,13 +673,15 @@ fn with_earlier(task: &str, context: Option<&str>) -> String {
 
 /// A few lines on the folder weft is in: what every model is told first, so
 /// an empty folder is a new project and not a mystery.
-pub fn snapshot(root: &Path) -> String {
+pub fn snapshot(ctx: &Ctx) -> String {
+    let root = &ctx.root;
     let global = std::env::home_dir().map(|h| h.join(".config/weft/WEFT.md"));
     let kept = crate::tools::memory::file_for(root);
+    let configured = ctx.project.notes.as_deref().unwrap_or("");
     format!(
         "{}{}",
         folder_note(root),
-        notes(root, global.as_deref(), kept.as_deref())
+        notes(root, global.as_deref(), configured, kept.as_deref())
     )
 }
 
@@ -572,30 +689,32 @@ pub fn snapshot(root: &Path) -> String {
 const NOTES_CHARS: usize = 8_000;
 
 /// The user's standing instructions: `~/.config/weft/WEFT.md` for every
-/// project and `WEFT.md` in the folder for this one, then what weft itself
-/// kept with `remember`, as a `## Project notes` section. Empty when there
-/// are none.
-pub fn notes(root: &Path, global: Option<&Path>, kept: Option<&Path>) -> String {
+/// project, `WEFT.md` in the folder and the config's `notes` for this one,
+/// then what weft itself kept with `remember`, as a `## Project notes`
+/// section. Empty when there are none.
+pub fn notes(root: &Path, global: Option<&Path>, configured: &str, kept: Option<&Path>) -> String {
     let mut out = String::new();
-    let files = [
-        ("for every project", global.map(Path::to_path_buf)),
-        ("for this project", Some(root.join("WEFT.md"))),
-        ("weft kept from earlier tasks", kept.map(Path::to_path_buf)),
-    ];
-    for (label, path) in files {
-        let Some(path) = path else { continue };
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        if text.trim().is_empty() {
-            continue;
+    let mut add = |label: String, text: &str| {
+        if !text.trim().is_empty() {
+            out.push_str(&format!(
+                "### Notes {label}\n{}\n\n",
+                clip(text.trim(), NOTES_CHARS)
+            ));
         }
-        out.push_str(&format!(
-            "### Notes {label} ({})\n{}\n\n",
-            path.display(),
-            clip(text.trim(), NOTES_CHARS)
-        ));
-    }
+    };
+    let read = |p: Option<&Path>| {
+        p.and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default()
+    };
+    let shown = |label: &str, p: Option<&Path>| match p {
+        Some(p) => format!("{label} ({})", p.display()),
+        None => label.to_string(),
+    };
+    let here = root.join("WEFT.md");
+    add(shown("for every project", global), &read(global));
+    add(shown("for this project", Some(&here)), &read(Some(&here)));
+    add("for this project (weft's config)".into(), configured);
+    add(shown("weft kept from earlier tasks", kept), &read(kept));
     if out.is_empty() {
         return out;
     }
@@ -729,15 +848,31 @@ fn clip(s: &str, max: usize) -> String {
 }
 
 /// What the reviewer reads.
-fn review_brief(task: &str, plan: Option<&str>, report: &str, diff: &str) -> String {
+fn review_brief(
+    task: &str,
+    plan: Option<&str>,
+    report: &str,
+    checks: Option<&str>,
+    diff: &str,
+) -> String {
     let mut b = format!("## Task\n{task}\n\n");
     if let Some(p) = plan {
         b.push_str(&format!("## Plan\n{p}\n\n"));
     }
-    b.push_str(&format!(
-        "## Worker's report\n{report}\n\n## Diff\n```\n{diff}\n```"
-    ));
+    b.push_str(&format!("## Worker's report\n{report}\n\n"));
+    if let Some(c) = checks {
+        b.push_str(&format!(
+            "## Checks\nRun by weft just now, not by the worker:\n```\n{c}\n```\n\n"
+        ));
+    }
+    b.push_str(&format!("## Diff\n```\n{diff}\n```"));
     b
+}
+
+/// The last `n` lines of `text`.
+fn tail_lines(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
 /// The changes to `paths` as a diff against git's HEAD, or the files whole
@@ -1167,7 +1302,7 @@ mod tests {
     #[test]
     fn notes_come_from_the_folder_and_the_global_file() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(notes(dir.path(), None, None), "");
+        assert_eq!(notes(dir.path(), None, "", None), "");
         std::fs::write(
             dir.path().join("WEFT.md"),
             "Run `cargo test` before answering.\n",
@@ -1177,18 +1312,176 @@ mod tests {
         std::fs::write(&global, "One-line commits.").unwrap();
         let kept = dir.path().join("kept.md");
         std::fs::write(&kept, "- Tests take a minute.").unwrap();
-        let text = notes(dir.path(), Some(&global), Some(&kept));
+        let text = notes(
+            dir.path(),
+            Some(&global),
+            "Deploy only when asked.",
+            Some(&kept),
+        );
         assert!(
             text.contains("weft kept from earlier tasks") && text.contains("Tests take a minute.")
         );
         assert!(text.starts_with("## Project notes\n"), "{text}");
+        assert!(
+            text.contains("### Notes for this project (weft's config)\nDeploy only when asked."),
+            "{text}"
+        );
         let every = text.find("for every project").unwrap();
         let this = text.find("for this project").unwrap();
         assert!(every < this && text.contains("One-line commits.") && text.contains("cargo test"));
-        let s = snapshot(dir.path());
+        let s = snapshot(&Ctx::new(dir.path().to_path_buf()));
         assert!(
             s.starts_with("## Project\n") && s.contains("## Project notes"),
             "{s}"
+        );
+    }
+
+    /// A tandem over `ctx` with the project's checks set to `verify`, no plan.
+    fn checked_ctx(dir: &Path, verify: &str) -> Ctx {
+        let mut ctx = Ctx::new(dir.to_path_buf());
+        ctx.project = std::sync::Arc::new(crate::config::Project {
+            path: String::new(),
+            verify: Some(verify.into()),
+            verify_timeout_s: 30,
+            notes: None,
+        });
+        ctx
+    }
+
+    #[tokio::test]
+    async fn a_failing_check_goes_back_to_the_worker_and_the_reviewer_sees_it_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        let ctx = checked_ctx(dir.path(), "test -f ok.txt");
+        let registry = Registry::builtin();
+        let planner = Scripted::new("planner", vec![]);
+        let reviewer = Scripted::new(
+            "reviewer",
+            vec![Scripted::text("VERDICT: APPROVE\nNothing to add")],
+        );
+        let worker = Scripted::new(
+            "worker",
+            vec![
+                Scripted::calls(vec![edit("a.txt", "one", "two")]),
+                Scripted::text("Changed."),
+            ],
+        );
+        let worker_thinking = Scripted::new(
+            "worker-thinking",
+            vec![
+                Scripted::calls(vec![ToolCall {
+                    id: "w".into(),
+                    name: "write_file".into(),
+                    arguments: json!({"path": "ok.txt", "content": "ok\n"}),
+                }]),
+                Scripted::text("Made the check pass."),
+            ],
+        );
+        let (events, _rx) = mpsc::channel(256);
+        let mut tandem = Tandem {
+            planner: &planner,
+            reviewer: &reviewer,
+            worker: &worker,
+            worker_thinking: &worker_thinking,
+            registry: &registry,
+            planner_registry: &registry,
+            ctx: &ctx,
+            approver: &Yes,
+            events,
+            cancel: CancellationToken::new(),
+            allowed: HashSet::new(),
+            when: PlanWhen::Never,
+            review_rounds: 1,
+            confirm: Confirm::Never,
+            lead: String::new(),
+            window: crate::config::DEFAULT_WINDOW,
+            digest: None,
+        };
+        let mut messages = vec![Message::System("sys".into())];
+        let out = tandem
+            .run("make it two", Mode::Go, &mut messages)
+            .await
+            .unwrap();
+        assert_eq!(out.checks, Some(true));
+        let seen = worker.seen.lock().unwrap().clone();
+        assert!(
+            seen[0].contains("## Checks\nWhen you are done, weft runs `test -f ok.txt`"),
+            "{}",
+            seen[0]
+        );
+        let fix = worker_thinking.seen.lock().unwrap().clone();
+        assert!(
+            fix[0].starts_with("## Checks failed\nweft ran `test -f ok.txt`")
+                && fix[0].contains("[exit 1]"),
+            "{}",
+            fix[0]
+        );
+        let review = reviewer.seen.lock().unwrap().clone();
+        assert!(
+            review[0].contains("## Checks\nRun by weft")
+                && review[0].contains("`test -f ok.txt` passed"),
+            "{}",
+            review[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn checks_that_never_pass_are_tried_a_few_times_then_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        let ctx = checked_ctx(dir.path(), "echo broken; false");
+        let registry = Registry::builtin();
+        let planner = Scripted::new("planner", vec![]);
+        let reviewer = Scripted::new(
+            "reviewer",
+            vec![Scripted::text("VERDICT: FIX\n1. `a.txt`: the checks fail")],
+        );
+        let worker = Scripted::new(
+            "worker",
+            vec![
+                Scripted::calls(vec![edit("a.txt", "one", "two")]),
+                Scripted::text("Changed."),
+            ],
+        );
+        let worker_thinking = Scripted::new(
+            "worker-thinking",
+            (0..CHECK_FIXES)
+                .map(|_| Scripted::text("Could not fix it."))
+                .collect(),
+        );
+        let (events, _rx) = mpsc::channel(256);
+        let mut tandem = Tandem {
+            planner: &planner,
+            reviewer: &reviewer,
+            worker: &worker,
+            worker_thinking: &worker_thinking,
+            registry: &registry,
+            planner_registry: &registry,
+            ctx: &ctx,
+            approver: &Yes,
+            events,
+            cancel: CancellationToken::new(),
+            allowed: HashSet::new(),
+            when: PlanWhen::Never,
+            review_rounds: 1,
+            confirm: Confirm::Never,
+            lead: String::new(),
+            window: crate::config::DEFAULT_WINDOW,
+            digest: None,
+        };
+        let mut messages = vec![Message::System("sys".into())];
+        let out = tandem
+            .run("make it two", Mode::Go, &mut messages)
+            .await
+            .unwrap();
+        assert_eq!(out.checks, Some(false));
+        assert!(out.fixes_pending);
+        assert_eq!(worker_thinking.seen.lock().unwrap().len(), CHECK_FIXES);
+        let review = reviewer.seen.lock().unwrap().clone();
+        assert!(
+            review[0].contains("`echo broken; false` FAILED\nbroken"),
+            "{}",
+            review[0]
         );
     }
 
@@ -1203,6 +1496,12 @@ mod tests {
             ["First.", "Second."]
         );
         assert!(plan_items("Just look at it.").is_empty());
+        assert_eq!(
+            plan_items(
+                "## Plan\n1. `a.rs`: x\n\n## Done when\n1. Saying hi gets hi back.\n\n## Verify\nt"
+            ),
+            ["`a.rs`: x", "Test: Saying hi gets hi back."]
+        );
     }
 
     #[tokio::test]
@@ -1347,7 +1646,7 @@ mod tests {
     #[test]
     fn snapshot_names_an_empty_folder_and_a_stack() {
         let dir = tempfile::tempdir().unwrap();
-        let s = snapshot(dir.path());
+        let s = snapshot(&Ctx::new(dir.path().to_path_buf()));
         assert!(s.contains("The folder is empty"), "{s}");
         std::fs::write(dir.path().join("package.json"), "{}").unwrap();
         std::fs::create_dir(dir.path().join("src")).unwrap();
@@ -1355,7 +1654,7 @@ mod tests {
         std::fs::write(dir.path().join("src/App.tsx"), "").unwrap();
         std::fs::write(dir.path().join("src/components/Monitors.test.tsx"), "").unwrap();
         std::fs::create_dir_all(dir.path().join("node_modules/x")).unwrap();
-        let s = snapshot(dir.path());
+        let s = snapshot(&Ctx::new(dir.path().to_path_buf()));
         assert!(
             s.contains("Stack: Node") && s.contains("Top level: package.json src/"),
             "{s}"

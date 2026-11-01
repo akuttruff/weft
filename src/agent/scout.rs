@@ -76,7 +76,7 @@ impl Tool for Scout {
             .wrap_up(false);
         let mut convo = vec![
             Message::System(prompts::SCOUT.into()),
-            Message::User(format!("{}## Question\n{question}", snapshot(&ctx.root))),
+            Message::User(format!("{}## Question\n{question}", snapshot(ctx))),
         ];
         let mut result = worker.run(&mut convo).await;
 

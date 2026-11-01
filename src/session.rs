@@ -105,7 +105,11 @@ impl Session {
             hooks: Hooks(config.hooks.clone()),
             rules: config.approve.clone(),
             window: config.compact.window,
-            ctx: Ctx::new(root),
+            ctx: {
+                let mut ctx = Ctx::new(root);
+                ctx.project = Arc::new(config.project_for(&ctx.root).cloned().unwrap_or_default());
+                ctx
+            },
             when: config.planner.when,
             review_rounds: config.planner.review_rounds,
             confirm: config.planner.confirm,
@@ -172,7 +176,7 @@ impl Session {
             "## Resumed\nThis conversation was saved {} and picked up again {}. The project may have changed since: read a file again before editing it, and do not trust earlier tool output to still hold.\n\n{}",
             day_of(&saved.last),
             day_of(&transcript::now()),
-            snapshot(&self.ctx.root)
+            snapshot(&self.ctx)
         );
         // A plan the last task ended on (stopped, or left for later) comes
         // along, so "go ahead with the plan" means something.

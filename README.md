@@ -78,19 +78,31 @@ a word, and so on.
    plan. A question or a one-spot change goes straight to work; anything wider
    is planned first. `/plan <task>` and `/go <task>` override it.
 3. **Plan.** The planner looks at the code with read-only tools, or asks the
-   scout, then writes a short plan: the files and changes, the one command
-   that verifies, and the pitfalls it noticed.
+   scout, then writes a short plan: the files and changes (naming the helpers
+   nearby code already uses), a `## Done when` list of what must work as the
+   user would try it, the one command that verifies, and the pitfalls it
+   noticed. Out of look-arounds, it is asked for the plan from what it has.
 4. **Work.** The plan's steps become the worker's checklist, shown as it
    goes (`☒` done, `◼` under way, `☐` not started); the status line names the
    step under way and the tool running now. The worker follows the plan with
    the full tool set, runs the check, and reports what changed as `path:line`.
-   If it answers with steps still open, it is sent back, up to twice, to
-   finish them or say why it cannot.
-5. **Review.** If files were touched, by the edit tools or through `bash`
-   (git shows what changed), the planner model reads the diff against the
-   task and the plan and answers `APPROVE` or `FIX` with a numbered list. The
-   asks join the checklist. On `FIX` the worker goes again, this time with its
-   thinking on. One review round by default.
+   Each `## Done when` line becomes a `Test:` step: a test that drives it
+   through the path the user would take. If the worker answers with steps
+   still open, it is sent back, up to twice, to finish them or say why it
+   cannot.
+5. **Checks.** If files were touched and the project has a `verify` command
+   (see `[[project]]` below), weft runs it itself. A failure goes back to the
+   worker, thinking on, with the end of the output, up to three times. The
+   summary line says how they ended.
+6. **Review.** If files were touched, by the edit tools or through `bash`
+   (git shows what changed), the planner model reads the diff, the checks'
+   result, the task and the plan. It may look past the diff with read-only
+   tools, a few calls, and goes through a list: failing checks, a test for
+   each `Done when` line, new code using the helpers its neighbours use, and
+   anything still naming what was removed. It answers `APPROVE` or `FIX`
+   with a numbered list; the asks join the checklist. On `FIX` the worker
+   goes again, thinking on, and the checks run again. One review round by
+   default.
 
 Tasks given one after another share the worker's conversation, so "now do the
 same for X" works. A task that reaches its cap of 120 tool rounds ends with
@@ -199,6 +211,14 @@ commands = ["cargo test", "cargo build", "git status", "git diff", "git log", "l
 [[hooks]]
 on = "after_edit"           # after_edit | before_bash | after_task
 run = "cargo fmt"           # run with sh -c, in the project root
+
+[[project]]                 # one per folder, matched by path; nothing goes in the repository
+path = "~/Code/myapp"
+verify = "npx tsc --noEmit && npx vitest run"   # weft runs it after the worker; failures go back
+verify_timeout_s = 300
+notes = """
+- Commits are one line.
+"""
 ```
 
 ## Project notes and memory
@@ -206,8 +226,9 @@ run = "cargo fmt"           # run with sh -c, in the project root
 A `WEFT.md` in the project root is read at the start of every task and shown
 to the planner, the worker, the reviewer and the scout as your standing
 instructions: how the tests are run, what must never be done, how commits are
-written. `~/.config/weft/WEFT.md` does the same for every project. Keep them
-short; they are in every prompt.
+written. `~/.config/weft/WEFT.md` does the same for every project, and a
+`[[project]]`'s `notes` in the config do it for one folder without a file in
+its repository. Keep them short; they are in every prompt.
 
 What weft learns on its own goes through its `remember` tool into
 `~/.local/share/weft/memory/<folder>.md`, one fact per line: how the tests
@@ -221,8 +242,9 @@ Edits, new files, shell commands and MCP tools ask first: `[y] once  [a]
 always this session  [n] no`. The `[approve]` section of the config names
 what never asks: tools by name, and shell commands by their leading words.
 `cargo test` lets `cargo test --lib` through and not `cargo testx`; every
-part of a chain joined with `&&`, `;`, `|` or a newline has to match; and a
-command with a `$(…)` or a backtick in it always asks. The rules live in your
+part of a chain joined with `&&`, `&`, `;`, `|` or a newline has to match;
+and a command with a `$(…)`, a backtick or a `>` in it (`2>&1` aside)
+always asks, since a redirect can write over any file. The rules live in your
 config, never in the project, so a repository cannot grant itself permissions.
 
 Hooks are shell commands of yours that weft runs at set moments. `after_edit`
@@ -314,7 +336,12 @@ the words back: a description, or the answer to a question about it. Your
 models are all vision models; the planner's is used unless `[vision]` names
 another. Point the worker at a screenshot in the task text, or drop one on
 the terminal, and it will look: `see_image` reads a picture by its full path
-wherever it is.
+wherever it is. A screenshot's name has a narrow space before "PM" that a
+model types as a plain one; both spellings are tried. An answer is kept for
+the session, so the planner and the worker asking about the same picture
+cost one look. macOS keeps iCloud Drive, Desktop and Documents from a
+terminal until it is let in (System Settings › Privacy & Security); a
+refusal says so.
 
 ## Command line
 

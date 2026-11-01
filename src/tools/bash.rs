@@ -67,58 +67,77 @@ impl Tool for Bash {
             .unwrap_or(DEFAULT_TIMEOUT_S)
             .min(MAX_TIMEOUT_S);
 
-        let mut child = tokio::process::Command::new("/bin/zsh")
-            .arg("-c")
-            .arg(command)
-            .current_dir(&ctx.root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()?;
-
-        // Rust: read both pipes at once with `join!`, else a full stderr pipe
-        // could block the child while we wait on stdout.
-        let mut stdout = child.stdout.take().expect("piped");
-        let mut stderr = child.stderr.take().expect("piped");
-        let read_both = async {
-            let (mut out, mut err) = (Vec::new(), Vec::new());
-            let _ = tokio::join!(stdout.read_to_end(&mut out), stderr.read_to_end(&mut err));
-            (out, err)
-        };
-
-        let result = tokio::time::timeout(Duration::from_secs(timeout), async {
-            let (out, err) = read_both.await;
-            let status = child.wait().await;
-            (out, err, status)
-        })
-        .await;
-
-        let (out, err, status) = match result {
-            Ok(x) => x,
-            Err(_) => {
-                let _ = child.kill().await;
-                return Err(ToolError::Failed(format!("timed out after {timeout}s")));
-            }
-        };
-        let status = status?;
-
-        let mut text = String::from_utf8_lossy(&out).into_owned();
-        if !err.is_empty() {
-            if !text.is_empty() && !text.ends_with('\n') {
-                text.push('\n');
-            }
-            text.push_str(&String::from_utf8_lossy(&err));
-        }
-        let mut shown = tail(&text, OUT_LINES, OUT_BYTES);
-        if shown.is_empty() {
-            shown.push_str("(no output)\n");
-        }
-        if !status.success() {
-            shown.push_str(&format!("[exit {}]\n", status.code().unwrap_or(-1)));
-        }
-        Ok(shown)
+        Ok(run_shell(&ctx.root, command, timeout).await?.text)
     }
+}
+
+/// How a shell line went: whether it exited 0, and its output (the last
+/// lines, with `[exit n]` after a failure).
+pub struct Ran {
+    pub ok: bool,
+    pub text: String,
+}
+
+/// Run `command` with zsh in `root`, killed after `timeout` seconds.
+pub async fn run_shell(
+    root: &std::path::Path,
+    command: &str,
+    timeout: u64,
+) -> Result<Ran, ToolError> {
+    let mut child = tokio::process::Command::new("/bin/zsh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+
+    // Rust: read both pipes at once with `join!`, else a full stderr pipe
+    // could block the child while we wait on stdout.
+    let mut stdout = child.stdout.take().expect("piped");
+    let mut stderr = child.stderr.take().expect("piped");
+    let read_both = async {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let _ = tokio::join!(stdout.read_to_end(&mut out), stderr.read_to_end(&mut err));
+        (out, err)
+    };
+
+    let result = tokio::time::timeout(Duration::from_secs(timeout), async {
+        let (out, err) = read_both.await;
+        let status = child.wait().await;
+        (out, err, status)
+    })
+    .await;
+
+    let (out, err, status) = match result {
+        Ok(x) => x,
+        Err(_) => {
+            let _ = child.kill().await;
+            return Err(ToolError::Failed(format!("timed out after {timeout}s")));
+        }
+    };
+    let status = status?;
+
+    let mut text = String::from_utf8_lossy(&out).into_owned();
+    if !err.is_empty() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&String::from_utf8_lossy(&err));
+    }
+    let mut shown = tail(&text, OUT_LINES, OUT_BYTES);
+    if shown.is_empty() {
+        shown.push_str("(no output)\n");
+    }
+    if !status.success() {
+        shown.push_str(&format!("[exit {}]\n", status.code().unwrap_or(-1)));
+    }
+    Ok(Ran {
+        ok: status.success(),
+        text: shown,
+    })
 }
 
 fn forbidden(command: &str) -> Option<&'static str> {

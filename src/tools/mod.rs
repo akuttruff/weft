@@ -45,6 +45,8 @@ pub struct Ctx {
     /// The worker's checklist, kept for the session: the `todo` tool writes
     /// it, the tandem seeds it from the plan and checks it at the end.
     pub todos: todo::Todos,
+    /// The project's own settings from the config: its checks and notes.
+    pub project: Arc<crate::config::Project>,
 }
 
 impl std::fmt::Debug for Ctx {
@@ -63,6 +65,7 @@ impl Ctx {
             approver: None,
             allowed: Arc::default(),
             todos: Arc::default(),
+            project: Arc::default(),
         }
     }
 
@@ -78,6 +81,7 @@ impl Ctx {
             approver: None,
             allowed: Arc::default(),
             todos: self.todos.clone(),
+            project: self.project.clone(),
         }
     }
 
@@ -150,8 +154,8 @@ pub struct Rules {
     pub tools: Vec<String>,
     /// Shell commands that never ask, by leading words: `cargo test` lets
     /// `cargo test --lib` through, not `cargo testx`. Every part of a chain
-    /// (`&&`, `;`, `|`, a newline) must match, and nothing with a `$(…)` or a
-    /// backtick in it does.
+    /// (`&&`, `&`, `;`, `|`, a newline) must match, and nothing with a `$(…)`,
+    /// a backtick or a `>` (but `2>&1`) in it does.
     #[serde(default)]
     pub commands: Vec<String>,
 }
@@ -171,8 +175,14 @@ impl Rules {
         if self.commands.is_empty() || cmd.contains("$(") || cmd.contains('`') {
             return false;
         }
-        cmd.split(['\n', ';', '|'])
-            .flat_map(|part| part.split("&&"))
+        // Output joined to the log is fine; any other `>` writes a file,
+        // whatever command it follows.
+        let cmd = cmd.replace("2>&1", "");
+        if cmd.contains('>') {
+            return false;
+        }
+        // A lone `&` starts a second command as surely as `;` does.
+        cmd.split(['\n', ';', '|', '&'])
             .map(str::trim)
             .filter(|part| !part.is_empty())
             .all(|part| self.commands.iter().any(|c| leads_with(part, c)))
@@ -508,6 +518,10 @@ mod tests {
         assert!(!rules.allows("bash", &bash("cargo testx")));
         assert!(!rules.allows("bash", &bash("ls; rm -rf x")));
         assert!(!rules.allows("bash", &bash("ls $(rm x)")));
+        assert!(!rules.allows("bash", &bash("cargo test & rm -rf src")));
+        assert!(!rules.allows("bash", &bash("head -c 0 > src/main.rs")));
+        assert!(!rules.allows("bash", &bash("ls >> notes.txt")));
+        assert!(rules.allows("bash", &bash("cargo test 2>&1 | head -n 50")));
         assert!(!Rules::default().allows("bash", &bash("ls")));
     }
 

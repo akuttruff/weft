@@ -28,6 +28,8 @@ pub struct Models {
     /// The vision model for `see_image`: the planner's unless named.
     pub vision: String,
     pub vision_effort: Effort,
+    /// What `see_image` has answered, shared by every registry built here.
+    pub seen: crate::tools::image::Seen,
 }
 
 impl Models {
@@ -51,6 +53,7 @@ impl Models {
                 .clone()
                 .unwrap_or_else(|| config.planner.model.clone()),
             vision_effort: config.vision.effort,
+            seen: Default::default(),
         }
     }
 
@@ -96,6 +99,7 @@ impl Models {
             Box::new(SeeImage {
                 endpoint: self.endpoint(&self.vision),
                 effort: Some(self.vision_effort),
+                seen: self.seen.clone(),
             }),
         ];
         if let Some(file) = memory::file_for(root) {

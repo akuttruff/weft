@@ -35,6 +35,7 @@ impl App {
                     "working" => "working",
                     "reviewing" => "reviewing",
                     "fixing" => "fixing",
+                    "checking" => "checking",
                     "compacting" => "compacting",
                     _ => "working",
                 };
@@ -214,6 +215,11 @@ impl App {
         self.ask = None;
         match result {
             Ok(out) => {
+                let checks = match out.checks {
+                    Some(true) => " · checks passed",
+                    Some(false) => " · checks FAILED",
+                    None => "",
+                };
                 let review = match (out.reviews.last(), out.fixes_pending) {
                     (None, _) => "",
                     (Some(_), true) => " · fixes still pending",
@@ -232,7 +238,7 @@ impl App {
                     format!(" · todos {done}/{total}")
                 };
                 self.push(view::note_line(&format!(
-                    "  {} · planner {} · worker {} tokens{todos}{touched}{review}",
+                    "  {} · planner {} · worker {} tokens{todos}{touched}{checks}{review}",
                     view::clock(secs),
                     view::k(view::total(out.planner_usage)),
                     view::k(view::total(out.worker_usage)),

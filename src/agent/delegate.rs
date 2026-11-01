@@ -82,7 +82,7 @@ impl Tool for Delegate {
             Message::System(prompts::WORKER.into()),
             Message::User(format!(
                 "{}## Task\n{task}\n\n{}",
-                snapshot(&ctx.root),
+                snapshot(ctx),
                 prompts::DELEGATE_BRIEF
             )),
         ];

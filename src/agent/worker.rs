@@ -85,6 +85,9 @@ pub struct Worker<'a> {
     /// At the round cap, ask for a report and end well rather than fail.
     /// The scout keeps the failure: a wrong answer is worse than none.
     pub wrap_up: bool,
+    /// What the last, tool-less turn is asked for at the round cap: a
+    /// worker's report, a planner's plan, a reviewer's verdict.
+    pub wrap_up_prompt: &'static str,
 }
 
 impl<'a> Worker<'a> {
@@ -110,12 +113,19 @@ impl<'a> Worker<'a> {
             window: crate::config::DEFAULT_WINDOW,
             digest: None,
             wrap_up: true,
+            wrap_up_prompt: super::prompts::WRAP_UP,
         }
     }
 
     /// Whether the round cap ends with a report (true) or an error.
     pub fn wrap_up(mut self, wrap_up: bool) -> Self {
         self.wrap_up = wrap_up;
+        self
+    }
+
+    /// At the round cap, ask for this instead of a worker's report.
+    pub fn wrap_up_with(mut self, prompt: &'static str) -> Self {
+        self.wrap_up_prompt = prompt;
         self
     }
 
@@ -285,14 +295,16 @@ impl Worker<'_> {
         }
         // The rounds are spent but the work is not lost: one last turn with no
         // tools on offer, for a report the user can say "continue" to.
-        self.emit(AgentEvent::Note {
-            text: format!(
+        let text = if self.wrap_up_prompt == super::prompts::WRAP_UP {
+            format!(
                 "paused after {} tool rounds; the worker reports, and \"continue\" picks it up",
                 self.max_rounds
-            ),
-        })
-        .await;
-        messages.push(Message::User(super::prompts::WRAP_UP.into()));
+            )
+        } else {
+            format!("looked around {} times; writing up now", self.max_rounds)
+        };
+        self.emit(AgentEvent::Note { text }).await;
+        messages.push(Message::User(self.wrap_up_prompt.into()));
         let req = Request {
             messages: messages.clone(),
             tools: Vec::new(),
@@ -881,6 +893,31 @@ mod tests {
             }
         }
         assert!(noted);
+
+        // A planner is asked for its plan, not a worker's report.
+        let model = Scripted {
+            replies: Mutex::new(vec![
+                read(),
+                Reply {
+                    content: "## Plan\n1. a".into(),
+                    ..Default::default()
+                },
+            ]),
+            seen: Mutex::new(vec![]),
+        };
+        let (events, _rx) = mpsc::channel(64);
+        let mut worker = Worker::new(&model, &registry, &ctx, &Yes, events)
+            .rounds(1)
+            .window(0)
+            .wrap_up_with(crate::agent::prompts::PLAN_NOW);
+        let mut messages = vec![Message::User("plan it".into())];
+        assert_eq!(
+            worker.run(&mut messages).await.unwrap().answer,
+            "## Plan\n1. a"
+        );
+        assert!(
+            matches!(&messages[messages.len() - 2], Message::User(s) if s == crate::agent::prompts::PLAN_NOW)
+        );
 
         // Without wrap-up, the cap is still an error (the scout's choice).
         let model = Scripted {
