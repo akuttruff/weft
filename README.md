@@ -34,9 +34,9 @@ in the file. The plan sits in a cyan gutter, and its steps and the tests its
 `Done when` asks for become the checklist, ticked off as the worker goes.
 When the worker is done, weft runs the project's checks itself, then the
 reviewer reads the diff, looking around the code with read-only tools. Here
-it found the plan's tests missing: the fix waits on the checklist, and
-"continue" picks it up. Edits, new files and shell commands ask first, and
-one key answers.
+the worker's first checklist left out the plan's tests and was refused, so it
+put them back and wrote them before the reviewer approved. Edits, new files
+and shell commands ask first, and one key answers.
 
 Every plan waits for your word. It opens with what will change for you, in
 the app's terms, and any choices to confirm; the worker's file-by-file steps
