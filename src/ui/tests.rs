@@ -328,3 +328,79 @@ fn a_resize_shows_the_last_screenful_again_at_the_new_width() {
     assert_eq!(text(recent(&shown, 20, 2)), ["  eight", "last"]);
     assert!(recent(&shown, 20, 0).is_empty());
 }
+
+/// An app whose alerts are written down rather than sent.
+fn listening() -> (
+    App,
+    mpsc::Sender<UiMsg>,
+    std::sync::Arc<std::sync::Mutex<Vec<alert::Alert>>>,
+) {
+    let (mut app, tx, _rx) = app();
+    let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = heard.clone();
+    app.alert = Box::new(move |a| log.lock().unwrap().push(a));
+    (app, tx, heard)
+}
+
+#[test]
+fn a_question_rings_at_once_and_notifies_once_when_left_waiting() {
+    let (mut app, _tx, heard) = listening();
+    let (reply, _answer) = oneshot::channel();
+    app.on_msg(UiMsg::Ask {
+        what: "run `rm x`".into(),
+        reply,
+    });
+    assert_eq!(*heard.lock().unwrap(), [alert::Alert::Bell]);
+    app.on_tick();
+    assert_eq!(
+        heard.lock().unwrap().len(),
+        1,
+        "not yet: it has only just been asked"
+    );
+    // Thirty seconds on, still unanswered.
+    app.asked_at = Some((Instant::now() - alert::ASK_NOTIFY_AFTER, false));
+    app.on_tick();
+    app.on_tick();
+    assert_eq!(
+        heard.lock().unwrap()[1..],
+        [alert::Alert::Notify {
+            title: "weft is waiting".into(),
+            body: "Allow weft to run `rm x`?".into()
+        }]
+    );
+    // Answered: the clock stops.
+    app.ask = None;
+    app.on_tick();
+    assert!(app.asked_at.is_none());
+}
+
+#[test]
+fn a_long_task_says_when_it_is_done_and_a_short_one_does_not() {
+    let (mut app, _tx, heard) = listening();
+    let running = |began| Running {
+        began,
+        phase: "working",
+        turn: None,
+        text: String::new(),
+        answer_open: false,
+        doing: None,
+        cancel: CancellationToken::new(),
+    };
+    app.running = Some(running(Instant::now()));
+    app.on_done(Ok(TandemOutcome::default()));
+    assert!(heard.lock().unwrap().is_empty());
+    app.running = Some(running(
+        Instant::now() - alert::DONE_NOTIFY_AFTER - Duration::from_secs(5),
+    ));
+    app.on_done(Ok(TandemOutcome {
+        review_inconclusive: true,
+        ..Default::default()
+    }));
+    assert_eq!(
+        *heard.lock().unwrap(),
+        [alert::Alert::Notify {
+            title: "weft finished".into(),
+            body: "Done in 1m05s; the review was inconclusive.".into()
+        }]
+    );
+}

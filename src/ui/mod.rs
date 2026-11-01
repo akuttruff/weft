@@ -7,6 +7,7 @@
 //! pieces (a tool call, the plan, an answer) are pushed above it with
 //! `insert_before` and never redrawn again.
 
+mod alert;
 pub mod diff;
 mod draw;
 mod events;
@@ -247,6 +248,12 @@ struct App {
     todos: Vec<Todo>,
     /// The last plan, whole, for `/steps`.
     plan: Option<String>,
+    /// When the question on screen (an approval, a plan) was asked, and
+    /// whether a notification has gone out for it.
+    asked_at: Option<(Instant, bool)>,
+    /// How the screen gets your attention; the real bell and notification
+    /// unless a test listens instead.
+    alert: Box<dyn Fn(alert::Alert) + Send + Sync>,
     /// What has been written above the live area lately, kept to be wrapped
     /// again when the terminal changes width.
     shown: std::collections::VecDeque<(Vec<Line<'static>>, Vec<Span<'static>>)>,
@@ -365,7 +372,7 @@ async fn event_loop(
         tokio::select! {
             Some(Ok(event)) = keys.next() => app.on_terminal(event, &tx),
             Some(msg) = rx.recv() => app.on_msg(msg),
-            _ = tick.tick() => app.frame = app.frame.wrapping_add(1),
+            _ = tick.tick() => app.on_tick(),
         }
     }
     if let Some(r) = app.running.take() {
@@ -421,6 +428,8 @@ impl App {
             picking_session: false,
             todos: Vec::new(),
             plan: None,
+            asked_at: None,
+            alert: Box::new(alert::send),
             shown: std::collections::VecDeque::new(),
             resized: None,
             laid_out: None,

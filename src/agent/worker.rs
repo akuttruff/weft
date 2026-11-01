@@ -11,6 +11,9 @@ use super::{AgentEvent, Approver, Decision, Events, Model, Role, call_summary};
 use crate::lm::{Message, Request, StreamEvent, Usage};
 use crate::tools::{Ctx, Registry, ToolError};
 
+/// Tools that only look, and so may run side by side.
+const TOGETHER: [&str; 4] = ["read_file", "list_files", "search", "see_image"];
+
 /// Tool rounds before the loop gives up on a task.
 pub const MAX_ROUNDS: usize = 120;
 const MAX_TOKENS: u32 = 8_000;
@@ -201,10 +204,26 @@ impl Worker<'_> {
                 return Ok(outcome);
             }
 
-            for call in &reply.tool_calls {
+            let calls = &reply.tool_calls;
+            let mut next = 0;
+            while next < calls.len() {
                 if self.cancel.is_cancelled() {
                     return Err(WorkerError::Cancelled);
                 }
+                // Looks asked for together go out together: three screenshots
+                // take as long as the slowest, not the three of them in turn.
+                let together = calls[next..]
+                    .iter()
+                    .take_while(|c| self.alongside(c))
+                    .count();
+                if together >= 2 {
+                    self.run_together(&calls[next..next + together], messages)
+                        .await?;
+                    next += together;
+                    continue;
+                }
+                let call = &calls[next];
+                next += 1;
                 let summary = call_summary(&call.name, &call.arguments);
                 self.emit(AgentEvent::ToolStart {
                     id: call.id.clone(),
@@ -367,6 +386,68 @@ impl Worker<'_> {
         })
         .await;
         Ok(reply)
+    }
+
+    /// A call that may run beside others: one that only looks, and needs no
+    /// one's say-so.
+    fn alongside(&self, call: &crate::lm::ToolCall) -> bool {
+        TOGETHER.contains(&call.name.as_str()) && self.registry.approval(call).is_none()
+    }
+
+    /// Run looking-only calls at once. Each shows on the screen as a call and
+    /// its result together, in the order asked, as soon as it and those
+    /// before it are back; the results go to the model in that order too.
+    async fn run_together(
+        &self,
+        calls: &[crate::lm::ToolCall],
+        messages: &mut Vec<Message>,
+    ) -> Result<(), WorkerError> {
+        use futures_util::StreamExt;
+        use futures_util::stream::FuturesUnordered;
+        self.emit(AgentEvent::Note {
+            text: format!("{} looks at once", calls.len()),
+        })
+        .await;
+        let mut pending: FuturesUnordered<_> = calls
+            .iter()
+            .enumerate()
+            .map(|(i, call)| async move { (i, self.registry.run(call, self.ctx).await) })
+            .collect();
+        let mut back: Vec<Option<Result<String, ToolError>>> = calls.iter().map(|_| None).collect();
+        let mut shown = 0;
+        while shown < calls.len() {
+            let (i, result) = tokio::select! {
+                Some(done) = pending.next() => done,
+                _ = self.cancel.cancelled() => return Err(WorkerError::Cancelled),
+            };
+            back[i] = Some(result);
+            while let Some(Some(_)) = back.get(shown) {
+                let call = &calls[shown];
+                let (ok, output) = match back[shown].take().unwrap() {
+                    Ok(out) => (true, out),
+                    Err(e) => (false, format!("error: {e}")),
+                };
+                self.emit(AgentEvent::ToolStart {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    summary: call_summary(&call.name, &call.arguments),
+                    args: call.arguments.clone(),
+                })
+                .await;
+                self.emit(AgentEvent::ToolDone {
+                    id: call.id.clone(),
+                    ok,
+                    output: output.clone(),
+                })
+                .await;
+                messages.push(Message::Tool {
+                    call_id: call.id.clone(),
+                    content: output,
+                });
+                shown += 1;
+            }
+        }
+        Ok(())
     }
 
     async fn run_tool(&mut self, call: &crate::lm::ToolCall) -> Result<String, ToolError> {
@@ -592,6 +673,81 @@ mod tests {
             kinds,
             [
                 "start", "text", "end", "tool", "ok", "tool", "ok", "start", "text", "end"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn looks_asked_for_together_run_side_by_side_and_come_back_in_order() {
+        /// A look that takes a while: the last one asked finishes first.
+        struct SlowLook;
+        #[async_trait]
+        impl crate::tools::Tool for SlowLook {
+            fn spec(&self) -> crate::lm::ToolSpec {
+                crate::lm::ToolSpec {
+                    name: "see_image".into(),
+                    description: "slow".into(),
+                    parameters: json!({"type": "object"}),
+                }
+            }
+            async fn run(&self, args: &serde_json::Value, _ctx: &Ctx) -> Result<String, ToolError> {
+                let n = args["n"].as_u64().unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(400 - n * 100)).await;
+                Ok(format!("picture {n}"))
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(dir.path().to_path_buf());
+        let mut registry = Registry::empty();
+        registry.extend(vec![Box::new(SlowLook)]);
+        let model = Scripted {
+            replies: Mutex::new(vec![
+                Reply {
+                    tool_calls: (1..=3)
+                        .map(|n| call(&format!("c{n}"), "see_image", json!({"n": n})))
+                        .collect(),
+                    ..Default::default()
+                },
+                Reply {
+                    content: "Seen.".into(),
+                    ..Default::default()
+                },
+            ]),
+            seen: Mutex::new(vec![]),
+        };
+        let (events, mut rx) = mpsc::channel(64);
+        let mut worker = Worker::new(&model, &registry, &ctx, &Yes, events).window(0);
+        let mut messages = vec![Message::User("look".into())];
+        let began = std::time::Instant::now();
+        worker.run(&mut messages).await.unwrap();
+        // 300 + 200 + 100 ms one after another; side by side, the slowest.
+        assert!(
+            began.elapsed() < std::time::Duration::from_millis(550),
+            "{:?}",
+            began.elapsed()
+        );
+        let results: Vec<String> = messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::Tool { call_id, content } => Some(format!("{call_id}:{content}")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results, ["c1:picture 1", "c2:picture 2", "c3:picture 3"]);
+        drop(worker);
+        // Each call is shown with its result, in the order asked.
+        let mut shown = Vec::new();
+        while let Some(evt) = rx.recv().await {
+            match evt {
+                AgentEvent::ToolStart { id, .. } => shown.push(format!("start {id}")),
+                AgentEvent::ToolDone { id, .. } => shown.push(format!("done {id}")),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            shown,
+            [
+                "start c1", "done c1", "start c2", "done c2", "start c3", "done c3"
             ]
         );
     }

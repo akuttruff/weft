@@ -376,7 +376,18 @@ pub fn plan_view(text: &str) -> Vec<Line<'static>> {
     out
 }
 
-pub fn review_lines(approved: bool, text: &str) -> Vec<Line<'static>> {
+pub fn review_lines(approved: bool, inconclusive: bool, text: &str) -> Vec<Line<'static>> {
+    if inconclusive {
+        let mut out = vec![Line::from(Span::styled(
+            "  ? review inconclusive: not approved, and nothing sent back",
+            Style::new().fg(Color::Yellow),
+        ))];
+        out.extend(
+            text.lines()
+                .map(|l| Line::from(Span::styled(format!("    {l}"), Style::new().dim()))),
+        );
+        return out;
+    }
     if approved {
         return vec![Line::from(vec![
             Span::styled("  ✔ approved ", Style::new().fg(Color::Green)),

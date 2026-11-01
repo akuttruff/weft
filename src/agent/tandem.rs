@@ -55,6 +55,8 @@ pub struct TandemOutcome {
     pub reviews: Vec<(bool, String)>,
     /// The reviewer asked for fixes after the last allowed round, so they were not made.
     pub fixes_pending: bool,
+    /// The reviewer gave no verdict, asked twice: the change was not reviewed.
+    pub review_inconclusive: bool,
     /// The project's checks, as they stood when the task ended: passed or
     /// not. `None` when the project has none or nothing was changed.
     pub checks: Option<bool>,
@@ -326,10 +328,41 @@ impl Tandem<'_> {
             ];
             let review = reviewer.run(&mut convo).await?;
             out.planner_usage = add(out.planner_usage, review.usage);
-            let (approved, text) = verdict(&review.answer);
+            let (mut decided, mut text) = verdict(&review.answer);
+            // No verdict (the reviewer ran out of looks mid-search, say):
+            // asked once more, with no tools, for the verdict alone.
+            if decided.is_none() {
+                convo.push(Message::User(prompts::VERDICT_ONLY.into()));
+                let empty = Registry::empty();
+                let mut again = self.looker(self.reviewer, &empty, Role::Planner, 1);
+                let second = again.run(&mut convo).await?;
+                out.planner_usage = add(out.planner_usage, second.usage);
+                (decided, text) = verdict(&second.answer);
+            }
+            let Some(approved) = decided else {
+                // Not approval, and nothing to send the worker after.
+                let said = if text.is_empty() {
+                    "the reviewer gave no verdict, asked twice; the change was not reviewed"
+                        .to_string()
+                } else {
+                    format!(
+                        "the reviewer gave no verdict, asked twice; the change was not reviewed. It said:\n{text}"
+                    )
+                };
+                self.emit(AgentEvent::Review {
+                    approved: false,
+                    text: said.clone(),
+                    inconclusive: true,
+                })
+                .await;
+                out.reviews.push((false, said));
+                out.review_inconclusive = true;
+                break;
+            };
             self.emit(AgentEvent::Review {
                 approved,
                 text: text.clone(),
+                inconclusive: false,
             })
             .await;
             out.reviews.push((approved, text.clone()));
@@ -521,10 +554,14 @@ impl Tandem<'_> {
             (Mode::Plan, _) | (Mode::Auto, PlanWhen::Always) => true,
             (Mode::Go, _) | (Mode::Auto, PlanWhen::Never) => false,
             (Mode::Auto, PlanWhen::Auto) => {
-                // A quick, silent word from the worker: its events go nowhere.
+                // A quick, silent word: its events go nowhere. The small
+                // model that folds notes (the scout's) answers when there is
+                // one; one word does not need the worker's size, and a big
+                // model can take minutes just to start.
                 let (quiet, _keep) = mpsc::channel(8);
                 let empty = Registry::empty();
-                let mut triage = Worker::new(self.worker, &empty, self.ctx, &Yes, quiet)
+                let model = self.digest.unwrap_or(self.worker);
+                let mut triage = Worker::new(model, &empty, self.ctx, &Yes, quiet)
                     .rounds(1)
                     .window(self.window);
                 triage.cancel = self.cancel.clone();
@@ -675,24 +712,43 @@ fn numbered(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The reviewer's verdict and the rest of what it said. No verdict line reads
-/// as approval: a rambling reviewer should not send the worker on a chase.
-pub fn verdict(text: &str) -> (bool, String) {
-    let mut approved = true;
+/// The reviewer's verdict and the rest of what it said: `Some(true)` to
+/// approve, `Some(false)` to send back, `None` when no verdict line came.
+/// Tool calls written out as text (a turn with no tools on offer) are not
+/// part of what it said.
+pub fn verdict(text: &str) -> (Option<bool>, String) {
+    let mut decided = None;
     let mut rest = Vec::new();
+    let text = without_calls(text);
     for line in text.lines() {
         let t = line.trim();
         if let Some(v) = t
             .strip_prefix("VERDICT:")
             .or_else(|| t.strip_prefix("**VERDICT:**"))
         {
-            approved = v.to_uppercase().contains("APPROVE");
+            decided = Some(v.to_uppercase().contains("APPROVE"));
         } else {
             rest.push(line);
         }
     }
     let rest = rest.join("\n").trim().to_string();
-    (approved, rest)
+    (decided, rest)
+}
+
+/// `text` with any `<tool_call>…</tool_call>` blocks taken out, an unclosed
+/// one to the end.
+fn without_calls(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<tool_call>") {
+        out.push_str(&rest[..start]);
+        rest = match rest[start..].find("</tool_call>") {
+            Some(end) => &rest[start + end + "</tool_call>".len()..],
+            None => "",
+        };
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The last few tasks and answers of this session, for the models that do not
@@ -1484,6 +1540,82 @@ mod tests {
         );
     }
 
+    /// One edit through `Mode::Go`, reviewed by `reviewer`; the outcome and
+    /// how many fix rounds the worker was sent on.
+    async fn reviewed(reviewer: Vec<Reply>) -> (TandemOutcome, usize, Vec<String>) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        let ctx = Ctx::new(dir.path().to_path_buf());
+        let registry = Registry::builtin();
+        let planner = Scripted::new("planner", vec![]);
+        let reviewer = Scripted::new("reviewer", reviewer);
+        let worker = Scripted::new(
+            "worker",
+            vec![
+                Scripted::calls(vec![edit("a.txt", "one", "two")]),
+                Scripted::text("Changed."),
+            ],
+        );
+        let worker_thinking = Scripted::new("worker-thinking", vec![]);
+        let (events, _rx) = mpsc::channel(256);
+        let mut tandem = Tandem {
+            planner: &planner,
+            reviewer: &reviewer,
+            worker: &worker,
+            worker_thinking: &worker_thinking,
+            registry: &registry,
+            planner_registry: &registry,
+            ctx: &ctx,
+            approver: &Yes,
+            events,
+            cancel: CancellationToken::new(),
+            allowed: HashSet::new(),
+            when: PlanWhen::Never,
+            review_rounds: 2,
+            confirm: Confirm::Never,
+            lead: String::new(),
+            window: crate::config::DEFAULT_WINDOW,
+            digest: None,
+        };
+        let mut messages = vec![Message::System("sys".into())];
+        let out = tandem
+            .run("make it two", Mode::Go, &mut messages)
+            .await
+            .unwrap();
+        let fixes = worker_thinking.seen.lock().unwrap().len();
+        let asked = reviewer.seen.lock().unwrap().clone();
+        (out, fixes, asked)
+    }
+
+    #[tokio::test]
+    async fn a_review_without_a_verdict_is_asked_again_then_called_inconclusive() {
+        // Asked again, it answers: that verdict stands.
+        let (out, fixes, asked) = reviewed(vec![
+            Scripted::text("<tool_call>\n<function=search>\n<parameter=pattern>\nx\n</parameter>\n</function>\n</tool_call>"),
+            Scripted::text("VERDICT: APPROVE\nNothing to add"),
+        ])
+        .await;
+        assert_eq!(out.reviews, vec![(true, "Nothing to add".to_string())]);
+        assert!(!out.review_inconclusive);
+        assert_eq!(fixes, 0);
+        assert_eq!(asked[1], prompts::VERDICT_ONLY);
+
+        // Twice without one: not approved, and the worker is not sent after a guess.
+        let (out, fixes, _) = reviewed(vec![
+            Scripted::text("Looks fine, mostly."),
+            Scripted::text("Still looking."),
+        ])
+        .await;
+        assert!(out.review_inconclusive);
+        assert_eq!(out.reviews.len(), 1);
+        assert!(
+            !out.reviews[0].0
+                && out.reviews[0].1.contains("not reviewed")
+                && out.reviews[0].1.contains("Still looking.")
+        );
+        assert_eq!(fixes, 0);
+    }
+
     #[tokio::test]
     async fn checks_that_never_pass_are_tried_a_few_times_then_reported() {
         let dir = tempfile::tempdir().unwrap();
@@ -1810,15 +1942,29 @@ mod tests {
     fn reads_verdicts() {
         assert_eq!(
             verdict("VERDICT: APPROVE\nNothing to add"),
-            (true, "Nothing to add".into())
+            (Some(true), "Nothing to add".into())
         );
         assert_eq!(
             verdict("  **VERDICT:** FIX\n1. a\n2. b"),
-            (false, "1. a\n2. b".into())
+            (Some(false), "1. a\n2. b".into())
         );
+        // No verdict line is no verdict, not approval.
         assert_eq!(
             verdict("Looks fine to me."),
-            (true, "Looks fine to me.".into())
+            (None, "Looks fine to me.".into())
+        );
+        // As the last run's reviewer answered: tool calls written out, nothing else.
+        assert_eq!(
+            verdict(
+                "<tool_call>\n<function=search>\n<parameter=pattern>\nkindView\n</parameter>\n</function>\n</tool_call>"
+            ),
+            (None, String::new())
+        );
+        assert_eq!(
+            verdict(
+                "Checked.\n<tool_call>\n<function=search>\n</function>\n</tool_call>\nVERDICT: APPROVE\nFine."
+            ),
+            (Some(true), "Checked.\n\nFine.".into())
         );
     }
 

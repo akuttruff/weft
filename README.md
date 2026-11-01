@@ -75,8 +75,8 @@ a word, and so on.
 1. **Project note.** Every task opens with a few lines on the folder: its
    path, stack and git state, the file tree three levels deep, your `WEFT.md`,
    and what weft remembered from earlier tasks.
-2. **Triage.** The worker is asked, in one word, whether the task needs a
-   plan. A question or a one-spot change goes straight to work; anything wider
+2. **Triage.** The scout's small model (the worker, without one) is asked,
+   in one word, whether the task needs a plan. A question or a one-spot change goes straight to work; anything wider
    is planned first. `/plan <task>` and `/go <task>` override it.
 3. **Plan.** The planner looks at the code with read-only tools, or asks the
    scout, then writes a plan in two parts. The first is for you, in the app's
@@ -110,7 +110,9 @@ a word, and so on.
    anything still naming what was removed. It answers `APPROVE` or `FIX`
    with a numbered list; the asks join the checklist. On `FIX` the worker
    goes again, thinking on, and the checks run again. One review round by
-   default.
+   default. An answer with no verdict line is asked for again, once, with no
+   tools; still none, and the review is called inconclusive: not approved,
+   and the worker is not sent after a guess.
 
 Tasks given one after another share the worker's conversation, so "now do the
 same for X" works. A task that reaches its cap of 120 tool rounds ends with
@@ -248,7 +250,9 @@ you can edit or delete lines as you like.
 ## Approvals and hooks
 
 Edits, new files, shell commands and MCP tools ask first: `[y] once  [a]
-always this session  [n] no`. The `[approve]` section of the config names
+always this session  [n] no`. The terminal's bell rings when a question
+comes up, and a macOS notification follows if it is still waiting after 30
+seconds; a task that ran a minute or more sends one when it is done. The `[approve]` section of the config names
 what never asks: tools by name, and shell commands by their leading words.
 `cargo test` lets `cargo test --lib` through and not `cargo testx`; every
 part of a chain joined with `&&`, `&`, `;`, `|` or a newline has to match;
@@ -389,6 +393,9 @@ full path. `pkill`, `killall` and force pushes are never run.
 | `remember` | one fact about the project, kept for later tasks and sessions |
 | `todo` | the worker's checklist for work of several steps, shown as it goes |
 | `server__tool` | any tool of a configured MCP server; asks first |
+
+Looks the model asks for together (reads, listings, searches, pictures) run
+side by side; edits, commands and MCP tools run one at a time, in order.
 
 ## Reading the code to learn Rust
 

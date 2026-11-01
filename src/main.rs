@@ -610,7 +610,11 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
                 }
                 at_line_start = true;
             }
-            AgentEvent::Review { approved, text } => {
+            AgentEvent::Review {
+                approved,
+                text,
+                inconclusive,
+            } => {
                 if dim {
                     print!("\x1b[0m");
                     dim = false;
@@ -618,7 +622,14 @@ async fn print_events(mut rx: tokio::sync::mpsc::Receiver<AgentEvent>) {
                 if !at_line_start {
                     println!();
                 }
-                if approved {
+                if inconclusive {
+                    println!(
+                        "  \x1b[33m? review inconclusive: not approved, and nothing sent back\x1b[0m"
+                    );
+                    for line in text.lines() {
+                        println!("    \x1b[2m{line}\x1b[0m");
+                    }
+                } else if approved {
                     println!("  \x1b[32m✔ approved\x1b[0m \x1b[2m{text}\x1b[0m");
                 } else {
                     println!("  \x1b[33m✗ fixes requested\x1b[0m");

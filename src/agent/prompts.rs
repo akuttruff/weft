@@ -60,6 +60,10 @@ pub fn checks_failed(command: &str, output: &str) -> String {
 pub const PLAN_NOW: &str = "\
 Stop looking: you have used the look-arounds allowed, and no tools are available for this turn. Write the plan now from what you have seen, in exactly the shape you were given. Where you are unsure, make it a step for the worker to check first.";
 
+/// Sent when the reviewer's answer had no verdict line.
+pub const VERDICT_ONLY: &str = "\
+Your answer had no verdict line. Answer again now, with no tool calls: the first line exactly `VERDICT: APPROVE` or `VERDICT: FIX`, then the numbered list or the one-line note, in the shape you were given.";
+
 /// The reviewer's last turn when its look-arounds are spent.
 pub const REVIEW_NOW: &str = "\
 Stop looking: no tools are available for this turn. Give your verdict now, in exactly the shape you were given.";

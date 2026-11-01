@@ -8,10 +8,14 @@ impl App {
 
     pub(super) fn on_msg(&mut self, msg: UiMsg) {
         match msg {
-            UiMsg::Ask { what, reply } => self.ask = Some((what, reply)),
+            UiMsg::Ask { what, reply } => {
+                self.ask = Some((what, reply));
+                self.asked();
+            }
             UiMsg::AskPlan { reply } => {
                 self.flush_text();
                 self.plan_ask = Some(reply);
+                self.asked();
             }
             UiMsg::Done(result) => self.on_done(result),
             UiMsg::Compacted(result) => {
@@ -154,7 +158,11 @@ impl App {
                 );
                 self.plan = Some(text);
             }
-            AgentEvent::Review { approved, text } => self.push(view::review_lines(approved, &text)),
+            AgentEvent::Review {
+                approved,
+                text,
+                inconclusive,
+            } => self.push(view::review_lines(approved, inconclusive, &text)),
             AgentEvent::Hook { ok, text } => {
                 self.flush_text();
                 if text.is_empty() {
@@ -211,10 +219,61 @@ impl App {
         }
     }
 
+    /// A question is on screen: the bell now, and the clock starts for a notification.
+    fn asked(&mut self) {
+        (self.alert)(alert::Alert::Bell);
+        self.asked_at = Some((Instant::now(), false));
+    }
+
+    /// Every tick: the spinner turns, and a question left waiting gets a
+    /// notification, once.
+    pub(super) fn on_tick(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+        let waiting = self
+            .ask
+            .as_ref()
+            .map(|(what, _)| format!("Allow weft to {what}?"))
+            .or_else(|| {
+                self.plan_ask
+                    .as_ref()
+                    .map(|_| "A plan is waiting for your go-ahead.".to_string())
+            });
+        match (waiting, self.asked_at) {
+            (None, _) => self.asked_at = None,
+            (Some(what), Some((at, false))) if at.elapsed() >= alert::ASK_NOTIFY_AFTER => {
+                (self.alert)(alert::Alert::Notify {
+                    title: "weft is waiting".into(),
+                    body: what,
+                });
+                self.asked_at = Some((at, true));
+            }
+            (Some(_), None) => self.asked_at = Some((Instant::now(), false)),
+            _ => {}
+        }
+    }
+
     pub(super) fn on_done(&mut self, result: Result<TandemOutcome, WorkerError>) {
         self.flush_text();
         let began = self.running.take().map(|r| r.began);
         let secs = began.map(|b| b.elapsed().as_secs()).unwrap_or(0);
+        if secs >= alert::DONE_NOTIFY_AFTER.as_secs() {
+            let body = match &result {
+                Ok(out) if out.review_inconclusive => format!(
+                    "Done in {}; the review was inconclusive.",
+                    view::clock(secs)
+                ),
+                Ok(out) if out.checks == Some(false) => {
+                    format!("Done in {}; the checks still fail.", view::clock(secs))
+                }
+                Ok(_) => format!("Done in {}.", view::clock(secs)),
+                Err(WorkerError::Cancelled) => "Stopped.".to_string(),
+                Err(e) => format!("Stopped: {e}"),
+            };
+            (self.alert)(alert::Alert::Notify {
+                title: "weft finished".into(),
+                body,
+            });
+        }
         self.ask = None;
         match result {
             Ok(out) => {
@@ -224,6 +283,7 @@ impl App {
                     None => "",
                 };
                 let review = match (out.reviews.last(), out.fixes_pending) {
+                    _ if out.review_inconclusive => " · review inconclusive",
                     (None, _) => "",
                     (Some(_), true) => " · fixes still pending",
                     (Some((true, _)), false) => " · reviewed",

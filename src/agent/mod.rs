@@ -109,6 +109,9 @@ pub enum AgentEvent {
     Review {
         approved: bool,
         text: String,
+        /// No verdict came, asked twice: neither approved nor sent back.
+        #[serde(default)]
+        inconclusive: bool,
     },
     /// A model finished a turn and this is what it cost.
     TurnEnd {
