@@ -300,3 +300,31 @@ fn a_dropped_file_path_is_a_task_not_a_command() {
     type_text(&mut app, &tx, "/Users/a");
     assert!(!app.menu_open());
 }
+
+#[test]
+fn a_resize_shows_the_last_screenful_again_at_the_new_width() {
+    let block = |s: &str| (vec![Line::from(s.to_string())], vec![Span::raw("  ")]);
+    let shown: std::collections::VecDeque<_> = [
+        block("old"),
+        block("one two three four five six seven eight"),
+        block("last"),
+    ]
+    .into_iter()
+    .collect();
+    let text = |pieces: Vec<(Vec<Line<'static>>, Vec<Span<'static>>)>| -> Vec<String> {
+        pieces
+            .into_iter()
+            .flat_map(|(lines, _)| lines)
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    };
+    // At 20 columns the long piece takes three rows; four rows leave out "old"
+    // and show the long piece whole, its continuations indented.
+    assert_eq!(
+        text(recent(&shown, 20, 4)),
+        ["one two three four", "  five six seven", "  eight", "last"]
+    );
+    // Two rows: the end of the long piece, then the last.
+    assert_eq!(text(recent(&shown, 20, 2)), ["  eight", "last"]);
+    assert!(recent(&shown, 20, 0).is_empty());
+}

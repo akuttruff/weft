@@ -54,6 +54,10 @@ const LIVE_ROWS: u16 = 8;
 const TAIL_ROWS: u16 = 1;
 const BOX_ROWS: u16 = 5; // border + 3 lines + border
 const TICK: Duration = Duration::from_millis(120);
+/// How long the terminal must keep one size before the screen is laid out again.
+const SETTLE: Duration = Duration::from_millis(150);
+/// Pieces of the transcript kept for laying out again after a resize.
+const SHOWN_KEPT: usize = 400;
 const SPINNER: [&str; 6] = ["✻", "✢", "✳", "✶", "✻", "✽"];
 
 const COMMANDS: &[(&str, &str, bool)] = &[
@@ -240,6 +244,15 @@ struct App {
     picking_session: bool,
     /// The worker's checklist as last heard, for the status line and `/todos`.
     todos: Vec<Todo>,
+    /// What has been written above the live area lately, kept to be wrapped
+    /// again when the terminal changes width.
+    shown: std::collections::VecDeque<(Vec<Line<'static>>, Vec<Span<'static>>)>,
+    /// When the terminal last changed size; the screen is put right once it
+    /// has been still for `SETTLE`.
+    resized: Option<Instant>,
+    /// The size the screen was last laid out for: the resize events that
+    /// queued up while it settled say nothing new.
+    laid_out: Option<(u16, u16)>,
 }
 
 /// How the screen was left: for good, or to be started again on the same
@@ -327,6 +340,22 @@ async fn event_loop(
     }
 
     while !app.quit {
+        // While a window edge is being dragged nothing is drawn: each width
+        // would leave its own wrapped copy of the live area behind. Once the
+        // size holds, the screen is laid out afresh. Keys wait meanwhile: a
+        // pending read holds the terminal's input, and laying out asks the
+        // terminal where its cursor is, an answer that comes back as input.
+        if let Some(at) = app.resized {
+            if at.elapsed() < SETTLE {
+                tokio::select! {
+                    Some(msg) = rx.recv() => app.on_msg(msg),
+                    _ = tokio::time::sleep(SETTLE - at.elapsed()) => {}
+                }
+                continue;
+            }
+            app.resized = None;
+            app.repaint(terminal)?;
+        }
         app.flush(terminal)?;
         terminal.draw(|frame| app.render(frame))?;
 
@@ -340,7 +369,14 @@ async fn event_loop(
         r.cancel.cancel();
     }
     app.flush(terminal)?;
-    terminal.draw(|frame| frame.render_widget(Paragraph::new(""), frame.area()))?;
+    // The live area goes blank and the shell takes over at its top-left,
+    // rather than wherever the input box left the cursor.
+    let mut top = 0;
+    terminal.draw(|frame| {
+        top = frame.area().y;
+        frame.render_widget(Paragraph::new(""), frame.area());
+        frame.set_cursor_position((0, top));
+    })?;
     Ok(if app.restart {
         Exit::Restart
     } else {
@@ -381,6 +417,9 @@ impl App {
             sessions: Vec::new(),
             picking_session: false,
             todos: Vec::new(),
+            shown: std::collections::VecDeque::new(),
+            resized: None,
+            laid_out: None,
         }
     }
 
@@ -414,12 +453,52 @@ impl App {
         self.out.push((lines, indented));
     }
 
+    /// After a resize: the terminal has rewrapped (or not) whatever it held,
+    /// differently in each terminal, so start clean. Clear the screen, put the
+    /// live area at the top, and write the last screenful of the transcript
+    /// again at the new width, which brings the live area back to the bottom.
+    fn repaint(&mut self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
+        let size = terminal.size()?;
+        self.laid_out = Some((size.width, size.height));
+        crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+            crossterm::cursor::MoveTo(0, 0)
+        )?;
+        terminal.resize(Rect::new(0, 0, size.width, size.height))?;
+        // Ratatui draws only what changed since its last frame; the screen it
+        // remembers is gone, so the next frame is drawn whole.
+        terminal.clear()?;
+        let room = size.height.saturating_sub(LIVE_ROWS) as usize;
+        let again = recent(&self.shown, size.width as usize, room);
+        // Lines still waiting go after the ones shown again.
+        let waiting = std::mem::take(&mut self.out);
+        self.write(terminal, again)?;
+        self.out = waiting;
+        Ok(())
+    }
+
     /// Write the waiting lines above the live area, wrapped to the terminal's width.
     /// A terminal that will not take them (rare: one that cannot report its
     /// cursor) loses those lines but keeps the session; the error is shown once.
     fn flush(&mut self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
+        let out = std::mem::take(&mut self.out);
+        for block in &out {
+            if self.shown.len() == SHOWN_KEPT {
+                self.shown.pop_front();
+            }
+            self.shown.push_back(block.clone());
+        }
+        self.write(terminal, out)
+    }
+
+    fn write(
+        &mut self,
+        terminal: &mut ratatui::DefaultTerminal,
+        out: Vec<(Vec<Line<'static>>, Vec<Span<'static>>)>,
+    ) -> Result<()> {
         let width = terminal.size()?.width.max(10);
-        for (lines, cont) in std::mem::take(&mut self.out) {
+        for (lines, cont) in out {
             // Wrapped here, with hanging indents, so continuation lines keep
             // their gutter instead of starting at the left edge.
             let wrapped: Vec<Line<'static>> = lines
@@ -455,6 +534,31 @@ impl App {
             }
         }
     }
+}
+
+/// The last `rows` lines of `shown`, wrapped at `width`, oldest first: a
+/// screenful, as one piece. A tall piece at the top shows its end.
+fn recent(
+    shown: &std::collections::VecDeque<(Vec<Line<'static>>, Vec<Span<'static>>)>,
+    width: usize,
+    rows: usize,
+) -> Vec<(Vec<Line<'static>>, Vec<Span<'static>>)> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (block, cont) in shown.iter().rev() {
+        let wrapped: Vec<Line<'static>> = block
+            .iter()
+            .flat_map(|l| view::wrap_hanging(l, width.max(10), cont))
+            .collect();
+        lines.splice(0..0, wrapped);
+        if lines.len() >= rows {
+            break;
+        }
+    }
+    let cut = lines.len().saturating_sub(rows);
+    if rows == 0 || lines.len() == cut {
+        return Vec::new();
+    }
+    vec![(lines.split_off(cut), Vec::new())]
 }
 
 fn add(a: Usage, b: Usage) -> Usage {

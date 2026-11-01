@@ -8,6 +8,9 @@ impl App {
     pub(super) fn on_terminal(&mut self, event: Event, tx: &mpsc::Sender<UiMsg>) {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key, tx),
+            Event::Resize(w, h) if self.laid_out != Some((w, h)) => {
+                self.resized = Some(Instant::now())
+            }
             Event::Paste(text) => {
                 self.input
                     .insert_str(&text.replace("\r\n", "\n").replace('\r', "\n"));

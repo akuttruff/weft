@@ -30,7 +30,7 @@ impl App {
             frame.render_widget(para.scroll((count.saturating_sub(tail.height), 0)), tail);
         }
 
-        frame.render_widget(Paragraph::new(self.status_line()), status);
+        frame.render_widget(Paragraph::new(self.status_line(status.width)), status);
 
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
@@ -63,7 +63,7 @@ impl App {
         frame.render_widget(Paragraph::new(shown).scroll((scroll, 0)), inner);
         frame.set_cursor_position((inner.x + col, inner.y + row - scroll));
 
-        frame.render_widget(Paragraph::new(self.footer_line()), footer);
+        frame.render_widget(Paragraph::new(self.footer_line(footer.width)), footer);
     }
 
     /// While a command is being typed, the live area shows the line and the matching commands.
@@ -88,7 +88,7 @@ impl App {
         frame.set_cursor_position((area.x + 2 + self.input.width() as u16, area.y));
     }
 
-    pub(super) fn status_line(&self) -> Line<'static> {
+    pub(super) fn status_line(&self, width: u16) -> Line<'static> {
         if self.plan_ask.is_some() {
             return Line::from(vec![
                 Span::styled("? ", Style::new().fg(Color::Yellow).bold()),
@@ -118,31 +118,38 @@ impl App {
                 "compacting" => "Compacting",
                 _ => "Thinking about it",
             };
-            let mut s = format!("{verb}… {}", view::clock(r.began.elapsed().as_secs()));
+            let mut parts = vec![format!(
+                "{verb}… {}",
+                view::clock(r.began.elapsed().as_secs())
+            )];
             if let Some((Role::Planner, n)) = r.turn
                 && n > 0
             {
-                s.push_str(&format!(" · ~{} thinking tokens", view::k(n as u32)));
+                parts.push(format!("~{} thinking tokens", view::k(n as u32)));
             }
             // Where the work is: the step under way, then the tool running now.
             let (done, total) = todo::progress(&self.todos);
             if let Some(t) = self.todos.iter().find(|t| t.status == Status::InProgress) {
-                s.push_str(&format!(
-                    " · {}/{total} {}",
-                    done + 1,
-                    view::clip(&t.text, 40)
-                ));
+                parts.push(format!("{}/{total} {}", done + 1, view::clip(&t.text, 40)));
             }
             if let Some(doing) = &r.doing {
-                s.push_str(&format!(" · {}", view::clip(doing, 50)));
+                parts.push(view::clip(doing, 50));
             }
+            const HINT: &str = "  esc to interrupt";
+            let room = (width as usize).saturating_sub(2);
+            let s = view::fit(&parts, room);
+            let hint = if s.chars().count() + HINT.len() <= room {
+                HINT
+            } else {
+                ""
+            };
             return Line::from(vec![
                 Span::styled(
                     format!("{} ", SPINNER[self.frame % SPINNER.len()]),
                     Style::new().fg(Color::Magenta),
                 ),
                 Span::styled(s, Style::new().fg(Color::Magenta)),
-                Span::styled("  esc to interrupt", Style::new().dim()),
+                Span::styled(hint, Style::new().dim()),
             ]);
         }
         if self.quit_armed {
@@ -154,7 +161,7 @@ impl App {
         Line::from("")
     }
 
-    pub(super) fn footer_line(&self) -> Line<'static> {
+    pub(super) fn footer_line(&self, width: u16) -> Line<'static> {
         let pct = (self.context as f32 / self.session.window.max(1) as f32 * 100.0).round() as u32;
         // Name the model that has the floor: the planner while it plans or
         // reviews, the worker otherwise.
@@ -179,12 +186,21 @@ impl App {
             Some(r) => (self.session.worker_name(), r.phase),
             None => (self.session.worker_name(), "idle"),
         };
+        // Least needed last, so a narrow terminal loses those first.
+        let parts = [
+            model.to_string(),
+            doing.to_string(),
+            format!("context {pct}%"),
+            self.mode.label().to_string(),
+            format!("think {}", if self.think { "on" } else { "off" }),
+            format!("{} in conversation", self.session.depth()),
+            "/ for commands".to_string(),
+            "shift-tab".to_string(),
+        ];
         Line::from(Span::styled(
             format!(
-                "  {model} · {doing} · think {} · {} · context {pct}% · {} in conversation · / for commands · shift-tab",
-                if self.think { "on" } else { "off" },
-                self.mode.label(),
-                self.session.depth()
+                "  {}",
+                view::fit(&parts, (width as usize).saturating_sub(2))
             ),
             Style::new().dim(),
         ))

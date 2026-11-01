@@ -435,6 +435,24 @@ pub fn inline(l: &str, base: Style) -> Vec<Span<'static>> {
     spans
 }
 
+/// `parts` joined with ` · `, as many as fit in `width` columns, in order:
+/// what does not fit is left off whole rather than cut mid-word.
+pub fn fit(parts: &[String], width: usize) -> String {
+    let mut out = String::new();
+    for p in parts.iter().filter(|p| !p.is_empty()) {
+        let next = if out.is_empty() {
+            p.clone()
+        } else {
+            format!("{out} · {p}")
+        };
+        if unicode_width::UnicodeWidthStr::width(next.as_str()) > width {
+            break;
+        }
+        out = next;
+    }
+    out
+}
+
 /// `12.3k` style token counts.
 pub fn k(n: u32) -> String {
     if n >= 10_000 {
@@ -511,6 +529,19 @@ mod tests {
                 .add_modifier
                 .contains(Modifier::BOLD)
         );
+    }
+
+    #[test]
+    fn fit_leaves_off_whole_pieces() {
+        let parts = [
+            "qwen".to_string(),
+            "working".into(),
+            "think off".into(),
+            "".into(),
+        ];
+        assert_eq!(fit(&parts, 80), "qwen · working · think off");
+        assert_eq!(fit(&parts, 20), "qwen · working");
+        assert_eq!(fit(&parts, 3), "");
     }
 
     #[test]
