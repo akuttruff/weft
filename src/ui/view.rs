@@ -388,18 +388,28 @@ pub fn review_lines(approved: bool, inconclusive: bool, text: &str) -> Vec<Line<
         );
         return out;
     }
+    // The reviewer writes lines, and a little markdown: each line stays a
+    // line, with its **bold** and `code` drawn rather than spelt out.
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
     if approved {
-        return vec![Line::from(vec![
-            Span::styled("  ✔ approved ", Style::new().fg(Color::Green)),
-            Span::styled(text.to_string(), Style::new().dim()),
-        ])];
+        let mut first = vec![Span::styled("  ✔ approved ", Style::new().fg(Color::Green))];
+        first.extend(inline(lines.next().unwrap_or(""), Style::new().dim()));
+        let mut out = vec![Line::from(first)];
+        for l in lines {
+            let mut spans = vec![Span::raw("    ")];
+            spans.extend(inline(l, Style::new().dim()));
+            out.push(Line::from(spans));
+        }
+        return out;
     }
     let mut out = vec![Line::from(Span::styled(
         "  ✗ fixes requested",
         Style::new().fg(Color::Yellow),
     ))];
-    for l in text.lines() {
-        out.push(Line::from(format!("    {l}")));
+    for l in lines {
+        let mut spans = vec![Span::raw("    ")];
+        spans.extend(inline(l, Style::new()));
+        out.push(Line::from(spans));
     }
     out
 }
@@ -596,6 +606,33 @@ mod tests {
         assert_eq!(warn.spans[1].style.fg, Some(Color::Yellow));
         // A plan in the old shape shows whole, with nothing folded.
         assert_eq!(plan_view("## Plan\n1. x").len(), 2);
+    }
+
+    #[test]
+    fn an_approval_keeps_the_reviewers_lines_and_draws_its_bold() {
+        let lines = review_lines(
+            true,
+            false,
+            "Looks right.\n**Checks:** all pass.\n\n**Done when:** covered.",
+        );
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(
+            text,
+            [
+                "  ✔ approved Looks right.",
+                "    Checks: all pass.",
+                "    Done when: covered."
+            ]
+        );
+        assert!(
+            lines[1].spans[1]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
     }
 
     #[test]
