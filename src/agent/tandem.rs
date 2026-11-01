@@ -13,7 +13,7 @@ use super::{AgentEvent, Approver, Events, Model, PlanDecision, Role, Yes, prompt
 use crate::config::{Confirm, PlanWhen};
 use crate::lm::{Message, Usage};
 use crate::tools::bash::run_shell;
-use crate::tools::todo::{self, Status, Todo};
+use crate::tools::todo::{self, FIX, Status, TEST, Todo};
 use crate::tools::{Ctx, Registry};
 
 /// Tool rounds the planner gets to look around before it must write the plan.
@@ -29,10 +29,6 @@ const CHECK_LINES: usize = 80;
 const REVIEW_ROUNDS: usize = 6;
 /// A checklist line is cut here, in characters.
 const ITEM_CHARS: usize = 160;
-/// What a reviewer's ask starts with on the checklist.
-const FIX: &str = "Fix: ";
-/// What a `## Done when` line starts with on the checklist.
-const TEST: &str = "Test: ";
 /// The diff shown to the reviewer is cut here, in characters.
 const DIFF_LIMIT: usize = 30_000;
 /// How many times the user may send a plan back with notes.

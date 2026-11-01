@@ -71,7 +71,7 @@ Stop looking: no tools are available for this turn. Give your verdict now, in ex
 /// Put above the task when the plan's steps have become the checklist.
 pub const SEEDED_TODOS: &str = "\
 ## Checklist
-The plan's steps are on your `todo` list, all pending. Set each `in_progress` as you start it and `done` when its check passes; the user follows along there.
+The plan's steps are on your `todo` list, all pending. Set each `in_progress` as you start it and `done` when its check passes; the user follows along there. Keep the `Test:` steps: each is a test to write, and a list without them is refused.
 
 ";
 

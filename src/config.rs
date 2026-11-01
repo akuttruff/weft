@@ -134,7 +134,8 @@ pub struct Planner {
     /// Plan before every task, never, or let a quick triage decide.
     #[serde(default)]
     pub when: PlanWhen,
-    /// How many times the reviewer may send the worker back. 0 turns review off.
+    /// How many reviews a task gets. Every `FIX` but the last sends the
+    /// worker back, so 2 is one fix pass. 0 turns review off.
     #[serde(default = "default_review_rounds")]
     pub review_rounds: u8,
     /// When the plan waits for your go-ahead before the worker starts.
@@ -163,7 +164,7 @@ pub enum PlanWhen {
 }
 
 fn default_review_rounds() -> u8 {
-    1
+    2
 }
 
 /// The model that runs the tool loop: prompted on the raw completions route,
@@ -248,7 +249,7 @@ model = "qwen3.5-122b-a10b"
         assert_eq!(config.planner.plan_effort, Effort::Medium);
         assert_eq!(config.planner.review_effort, Effort::Low);
         assert_eq!(config.planner.when, PlanWhen::Auto);
-        assert_eq!(config.planner.review_rounds, 1);
+        assert_eq!(config.planner.review_rounds, 2);
         assert_eq!(config.planner.confirm, Confirm::Asked);
         assert!(!config.worker.thinking);
         assert_eq!(config.scout.model, None);

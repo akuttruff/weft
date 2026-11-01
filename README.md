@@ -105,9 +105,10 @@ a word, and so on.
    step under way and the tool running now. The worker follows the plan with
    the full tool set, runs the check, and reports what changed as `path:line`.
    Each `## Done when` line becomes a `Test:` step: a test that drives it
-   through the path the user would take. If the worker answers with steps
-   still open, it is sent back, up to twice, to finish them or say why it
-   cannot.
+   through the path the user would take. The worker may rewrite the list,
+   but a new list that leaves out an open `Test:` or `Fix:` step is refused.
+   If the worker answers with steps still open, it is sent back, up to twice,
+   to finish them or say why it cannot.
 5. **Checks.** If files were touched and the project has a `verify` command
    (see `[[project]]` below), weft runs it itself. A failure goes back to the
    worker, thinking on, with the end of the output, up to three times. The
@@ -119,8 +120,9 @@ a word, and so on.
    each `Done when` line, new code using the helpers its neighbours use, and
    anything still naming what was removed. It answers `APPROVE` or `FIX`
    with a numbered list; the asks join the checklist. On `FIX` the worker
-   goes again, thinking on, and the checks run again. One review round by
-   default. An answer with no verdict line is asked for again, once, with no
+   goes again, thinking on, and the checks run again, then the reviewer
+   reads the new diff. Two rounds by default: one fix pass; asks from the
+   last round wait on the checklist for "continue". An answer with no verdict line is asked for again, once, with no
    tools; still none, and the review is called inconclusive: not approved,
    and the worker is not sent after a guess.
 
@@ -207,7 +209,7 @@ plan_effort = "medium"      # low | medium | xhigh
 review_effort = "low"       # the review is one read of the diff; low is 3x faster than medium
 when = "auto"               # auto | always | never
 confirm = "asked"           # the plan waits for your word: asked (all but /go) | always | never
-review_rounds = 1           # 0 turns review off
+review_rounds = 2           # reviews per task, each FIX but the last gets a fix pass; 0 turns review off
 
 [worker]
 model = "qwen3.5-122b-a10b"

@@ -16,6 +16,59 @@ use crate::lm::ToolSpec;
 const MAX_CHARS: usize = 200;
 const MAX_ITEMS: usize = 20;
 
+/// What a reviewer's ask starts with on the checklist.
+pub const FIX: &str = "Fix: ";
+/// What a `## Done when` line starts with on the checklist.
+pub const TEST: &str = "Test: ";
+
+/// A step weft put on the list, not the worker: the plan's tests and the
+/// reviewer's asks. A new list may tick one off, but not leave it out.
+fn is_kept(t: &Todo) -> bool {
+    t.text.starts_with(TEST) || t.text.starts_with(FIX)
+}
+
+/// A step's words for matching: case and spacing aside.
+fn words(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// The open steps weft put on the list that `new` leaves out. A step
+/// reworded but kept under its prefix counts as kept, one for one.
+fn dropped(old: &[Todo], new: &[Todo]) -> Vec<String> {
+    let have: Vec<String> = new.iter().map(|t| words(&t.text)).collect();
+    let before: Vec<String> = old.iter().map(|t| words(&t.text)).collect();
+    let missing: Vec<&Todo> = old
+        .iter()
+        .filter(|t| t.is_open() && is_kept(t) && !have.contains(&words(&t.text)))
+        .collect();
+    let reworded = |prefix: &str| {
+        new.iter()
+            .filter(|t| t.text.starts_with(prefix) && !before.contains(&words(&t.text)))
+            .count()
+    };
+    let (mut tests, mut fixes) = (reworded(TEST), reworded(FIX));
+    missing
+        .into_iter()
+        .filter(|t| {
+            let spare = if t.text.starts_with(TEST) {
+                &mut tests
+            } else {
+                &mut fixes
+            };
+            if *spare > 0 {
+                *spare -= 1;
+                false
+            } else {
+                true
+            }
+        })
+        .map(|t| t.text.clone())
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
@@ -177,6 +230,22 @@ impl Tool for TodoWrite {
 
     async fn run(&self, args: &Value, ctx: &Ctx) -> Result<String, ToolError> {
         let list = parse(args)?;
+        // The plan's tests and the reviewer's asks stay until they are done:
+        // a fresh list that leaves them out would let them go unwritten.
+        let gone = dropped(&ctx.todos.lock().unwrap(), &list);
+        if !gone.is_empty() {
+            return Err(ToolError::BadArgs(format!(
+                "the list leaves out {} that weft added and that are not done:\n{}\n\
+                 Send the list again with each of them, word for word: mark one done \
+                 once it is written and passes, or keep it pending and say in your \
+                 answer why it cannot be done.",
+                if gone.len() == 1 { "a step" } else { "steps" },
+                gone.iter()
+                    .map(|t| format!("☐ {t}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )));
+        }
         let (done, total) = progress(&list);
         let reply = if total == 0 {
             "The list is clear.".to_string()
@@ -240,5 +309,47 @@ mod tests {
             1,
             "a refused list leaves the old one"
         );
+    }
+
+    #[tokio::test]
+    async fn the_plans_tests_and_the_reviewers_asks_cannot_be_left_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(dir.path().to_path_buf());
+        *ctx.todos.lock().unwrap() = vec![
+            Todo::pending("`a.rs`: sort the tiles"),
+            Todo::pending("Test: alerting tiles come first"),
+            Todo::pending("Fix: the empty group"),
+            Todo {
+                text: "Test: done already".into(),
+                status: Status::Done,
+            },
+        ];
+
+        // The worker's own list, without weft's open steps: refused, naming them.
+        let own = json!({"todos": [{"text": "Sort the tiles", "status": "in_progress"}]});
+        let Err(ToolError::BadArgs(why)) = TodoWrite.run(&own, &ctx).await else {
+            panic!("a list without the tests was taken");
+        };
+        assert!(why.contains("☐ Test: alerting tiles come first"), "{why}");
+        assert!(why.contains("☐ Fix: the empty group"), "{why}");
+        assert!(!why.contains("done already"), "{why}");
+        assert_eq!(ctx.todos.lock().unwrap().len(), 4);
+
+        // Kept (in other case or spacing), reworded under the prefix, or
+        // ticked off: taken. A done step may go.
+        let kept = json!({"todos": [
+            {"text": "Sort the tiles", "status": "done"},
+            {"text": "Test:  Alerting tiles come FIRST", "status": "in_progress"},
+            {"text": "Fix: the empty group keeps its place", "status": "done"}
+        ]});
+        assert!(TodoWrite.run(&kept, &ctx).await.is_ok());
+        assert_eq!(ctx.todos.lock().unwrap().len(), 3);
+
+        // Once done, they may leave the list.
+        let next = json!({"todos": [
+            {"text": "Test: Alerting tiles come first", "status": "done"}
+        ]});
+        assert!(TodoWrite.run(&next, &ctx).await.is_ok());
+        assert!(TodoWrite.run(&json!({"todos": []}), &ctx).await.is_ok());
     }
 }
