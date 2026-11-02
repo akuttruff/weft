@@ -3359,6 +3359,7 @@ dependencies = [
  "futures-util",
  "ignore",
  "jiff",
+ "libc",
  "ratatui",
  "regex",
  "reqwest",

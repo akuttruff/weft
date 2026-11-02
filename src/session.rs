@@ -24,6 +24,7 @@ use crate::lm::raw::RawModel;
 use crate::mcp;
 use crate::models::Models;
 use crate::tools::memory;
+use crate::tools::server::Server;
 use crate::tools::todo::TodoWrite;
 use crate::tools::{Ctx, Registry, Rules};
 use crate::transcript::{self, Record, Saved, Transcript};
@@ -90,7 +91,7 @@ impl Session {
             .with_hooks(config.hooks.clone());
         registry.extend(models.extra_tools(&root));
         // The checklist is the worker's own; helpers and the planner keep none.
-        registry.extend(vec![Box::new(TodoWrite)]);
+        registry.extend(vec![Box::new(TodoWrite), Box::new(Server)]);
         let mut planner_registry = Registry::read_only();
         planner_registry.extend(models.extra_tools(&root));
         Self {
@@ -376,6 +377,8 @@ impl Session {
             digest: Some(digest.as_ref()),
         };
         let result = tandem.run(task, mode, &mut messages).await;
+        // The dev servers the worker started end with the task.
+        ctx.servers.lock().unwrap().clear();
         // What the task's own worker approved joins the shared set.
         shared
             .lock()

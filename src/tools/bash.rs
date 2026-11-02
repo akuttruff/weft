@@ -151,14 +151,14 @@ pub async fn run_shell(
     })
 }
 
-fn forbidden(command: &str) -> Option<&'static str> {
+pub(crate) fn forbidden(command: &str) -> Option<&'static str> {
     FORBIDDEN.iter().copied().find(|bad| command.contains(bad))
 }
 
 /// Stopping a process by its number, or starting one that outlives the
 /// command. Both have left a service down here: a killed PID was launchd's,
 /// which then could not get its port back from the copy started with `&`.
-fn left_running(command: &str) -> Option<&'static str> {
+pub(crate) fn left_running(command: &str) -> Option<&'static str> {
     static KILL: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(^|[;&|(]|\bxargs(\s+-\S+)*)\s*kill\b").unwrap());
     // A lone `&`: not `&&`, `2>&1` or `&>`.
@@ -181,8 +181,12 @@ fn left_running(command: &str) -> Option<&'static str> {
 /// What to do instead, for the refusal.
 fn live_hint(deploy: Option<&str>) -> String {
     match deploy {
-        Some(d) => format!("To put changes live, run `{d}`."),
-        None => "To put changes live, say in your answer what the user should run.".into(),
+        Some(d) => format!(
+            "To put changes live, run `{d}`; to look at a change in a browser, use the `server` tool."
+        ),
+        None => "To put changes live, say in your answer what the user should run; to look at a \
+                 change in a browser, use the `server` tool."
+            .into(),
     }
 }
 

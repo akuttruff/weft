@@ -271,6 +271,7 @@ path = "~/Code/myapp"
 verify = "npx tsc --noEmit && npx vitest run"   # weft runs it after the worker; failures go back
 test = "npx vitest run --reporter=verbose {files}"  # runs the new tests without the change; guessed if left out
 deploy = "npm run deploy"   # how changes go live; the worker uses it, and "it's live" without it is flagged
+serve = "npx vite --port {port} --strictPort"  # a dev server the worker may start to look at a change
 verify_timeout_s = 300
 notes = """
 - Commits are one line.
@@ -424,6 +425,14 @@ full path. `pkill`, `killall` and force pushes are never run, and neither is
 anything that stops a process (`kill`) or leaves one running (`&`, `nohup`):
 the server on a port is often a service, which stays down once killed. A
 project's `deploy` line is how its changes go live.
+
+To look at a change in a browser, the worker has `server`: it runs the
+project's `serve` line (or a command it gives, with `{port}` in it) on a free
+port weft picks, waits until it answers, and stops the whole process group
+when the task ends. `look` saves a screenshot with headless Chrome for
+`see_image`; a phone width (under 500px, which headless Chrome won't lay out)
+is shot through a frame and cropped with `sips`. Set `CHROME` if Chrome is
+not in /Applications.
 
 ## The worker's tools
 

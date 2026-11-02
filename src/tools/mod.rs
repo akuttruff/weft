@@ -10,6 +10,7 @@ pub mod files;
 pub mod image;
 pub mod memory;
 pub mod search;
+pub mod server;
 pub mod todo;
 
 use std::collections::HashSet;
@@ -47,6 +48,8 @@ pub struct Ctx {
     pub todos: todo::Todos,
     /// The project's own settings from the config: its checks and notes.
     pub project: Arc<crate::config::Project>,
+    /// The dev servers this task started with `server`; they stop with it.
+    pub servers: server::Servers,
 }
 
 impl std::fmt::Debug for Ctx {
@@ -66,6 +69,7 @@ impl Ctx {
             allowed: Arc::default(),
             todos: Arc::default(),
             project: Arc::default(),
+            servers: Arc::default(),
         }
     }
 
@@ -82,6 +86,7 @@ impl Ctx {
             allowed: Arc::default(),
             todos: self.todos.clone(),
             project: self.project.clone(),
+            servers: Arc::default(),
         }
     }
 

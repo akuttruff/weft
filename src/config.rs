@@ -53,6 +53,10 @@ pub struct Project {
     /// and an answer that says the change is live without it is flagged.
     #[serde(default)]
     pub deploy: Option<String>,
+    /// Starts a dev server for the worker to look at, `{port}` standing for
+    /// a free port weft picks: `npx vite --port {port} --strictPort`.
+    #[serde(default)]
+    pub serve: Option<String>,
     /// Seconds the checks may take before they count as failed.
     #[serde(default = "default_verify_timeout")]
     pub verify_timeout_s: u64,
@@ -287,6 +291,7 @@ model = "w"
 path = "{}"
 verify = "npm test"
 deploy = "npm run deploy"
+serve = "npx vite --port {{port}}"
 notes = "Commits are one line."
 "#,
             dir.path().display()
@@ -295,6 +300,7 @@ notes = "Commits are one line."
         let p = config.project_for(dir.path()).unwrap();
         assert_eq!(p.verify.as_deref(), Some("npm test"));
         assert_eq!(p.deploy.as_deref(), Some("npm run deploy"));
+        assert_eq!(p.serve.as_deref(), Some("npx vite --port {port}"));
         assert_eq!(p.verify_timeout_s, 300);
         assert!(config.project_for(Path::new("/elsewhere")).is_none());
     }
