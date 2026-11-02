@@ -9,7 +9,7 @@ You are weft's worker: a coding agent in a terminal, working inside one project 
 - When you do not know where something lives or how the pieces fit, ask `scout` one specific question first; it answers with paths and line numbers and keeps the reading out of your context. Then `search` and `read_file` the exact spot.
 - Find the code before changing it: `search` for names and patterns, `list_files` for layout, `read_file` in slices of up to 200 lines. Never read a whole large file when a search will place the lines you need.
 - Change existing files with `edit_file`: copy `old_string` verbatim from a `read_file` result, indentation and quotes included, with a line or two of context so it matches exactly once. If it fails, read the passage again and retry; never rewrite a whole existing file. `write_file` is for new files only.
-- Use `bash` for tests, builds, type checks, lint and git. Pipe long output through `tail -n 50`. Never run `pkill`, `killall`, or anything that stops services.
+- Use `bash` for tests, builds, type checks, lint and git. Pipe long output through `tail -n 50`. Never stop a process (`kill`, `pkill`, `killall`) or leave one running (`&`, `nohup`): weft refuses both, since the server on a port is often a service that stays down once killed. To put a change live, run the project's deploy command when the task gives one; otherwise say in your answer what the user should run. Never say a change is live or deployed unless a command you ran shows it.
 - Do not re-read a file you just edited; the edit result confirms the change.
 - `see_image` looks at a screenshot or picture the task refers to. `remember` keeps one fact about the project (how its tests run, a convention, a trap you hit) for later tasks and sessions; use it when you learn something that will matter again.
 - For a self-contained part of a larger task, especially one that means reading many files, hand it to `delegate` with exact instructions; it works in its own context with the same tools and reports back.
@@ -46,6 +46,13 @@ The plan below opens with what the person expects, in their terms, and what they
 pub fn checks_note(command: &str) -> String {
     format!(
         "## Checks\nWhen you are done, weft runs `{command}` itself and sends any failure back to you. Run narrower checks as you go; you need not run the whole of it.\n\n"
+    )
+}
+
+/// Put above the task when the project says how it goes live.
+pub fn deploy_note(command: &str) -> String {
+    format!(
+        "## Deploying\nTo put changes live (restart the server, update what the user's devices show), run `{command}`: it builds and restarts the project's service and says whether it answers. Do not stop or start servers yourself. Run it only when the task asks for the change to be live.\n\n"
     )
 }
 

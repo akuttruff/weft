@@ -65,6 +65,8 @@ pub struct Outcome {
     pub usage: Usage,
     /// Files changed by edit_file or write_file, for the reviewer.
     pub touched: Vec<String>,
+    /// Shell lines run with `bash` that exited 0, in order.
+    pub ran: Vec<String>,
 }
 
 pub struct Worker<'a> {
@@ -244,6 +246,13 @@ impl Worker<'_> {
                     && !outcome.touched.iter().any(|p| p == path)
                 {
                     outcome.touched.push(path.to_string());
+                }
+                if ok
+                    && call.name == "bash"
+                    && !output.contains("\n[exit ")
+                    && let Some(command) = call.arguments.get("command").and_then(|v| v.as_str())
+                {
+                    outcome.ran.push(command.to_string());
                 }
                 self.emit(AgentEvent::ToolDone {
                     id: call.id.clone(),

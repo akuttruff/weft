@@ -59,6 +59,8 @@ pub struct TandemOutcome {
     /// not. `None` when the project has none or nothing was changed.
     pub checks: Option<bool>,
     pub touched: Vec<String>,
+    /// The worker's shell lines that exited 0.
+    pub ran: Vec<String>,
     pub rounds: usize,
     pub planner_usage: Usage,
     pub worker_usage: Usage,
@@ -238,6 +240,9 @@ impl Tandem<'_> {
         }
         if let Some(command) = &self.ctx.project.verify {
             lead.push_str(&prompts::checks_note(command));
+        }
+        if let Some(command) = &self.ctx.project.deploy {
+            lead.push_str(&prompts::deploy_note(command));
         }
         messages.push(Message::User(task_message(&lead, task, plan.as_deref())));
         // A plan with a `## Tasks` section runs as rounds: the worker does
@@ -423,12 +428,19 @@ impl Tandem<'_> {
             checks = self.check(messages, &git_before, &mut out).await?;
         }
 
+        // A change said to be live with nothing run that would make it so;
+        // no review reads an answer that touched no files.
+        let unproven = unproven_live(&out.answer, &out.ran, self.ctx.project.deploy.as_deref());
+
         // 5. The result, for the card the screen shows; a question that
         // changed nothing and had no plan gets none.
         if out.plan.is_none() && out.touched.is_empty() {
+            if let Some(text) = unproven {
+                self.emit(AgentEvent::Note { text }).await;
+            }
             return Ok(out);
         }
-        let report = report::build(
+        let mut report = report::build(
             task,
             out.plan.as_deref(),
             &out,
@@ -437,6 +449,7 @@ impl Tandem<'_> {
             proof.as_ref(),
             began.elapsed().as_secs(),
         );
+        report.warnings.extend(unproven);
         self.emit(AgentEvent::Finished {
             report: report.clone(),
         })
@@ -750,12 +763,49 @@ impl TandemOutcome {
         self.answer = done.answer.clone();
         self.rounds += done.rounds;
         self.worker_usage = add(self.worker_usage, done.usage);
+        self.ran.extend(done.ran.iter().cloned());
         for path in &done.touched {
             if !self.touched.contains(path) {
                 self.touched.push(path.clone());
             }
         }
     }
+}
+
+/// A warning when the answer says the change is live or the server was
+/// restarted, but no command that does that ran: the project's `deploy`
+/// line when it has one, else anything with deploy, kickstart or restart.
+fn unproven_live(answer: &str, ran: &[String], deploy: Option<&str>) -> Option<String> {
+    const CLAIMS: &[&str] = &[
+        "deployed",
+        "restarted",
+        "restart was successful",
+        "is live",
+        "now live",
+        "being served",
+        "be served",
+        "now serving",
+        "now served",
+    ];
+    let said = answer.to_lowercase();
+    if !CLAIMS.iter().any(|c| said.contains(c)) {
+        return None;
+    }
+    let done = match deploy {
+        Some(d) => ran.iter().any(|r| r.contains(d)),
+        None => ran.iter().any(|r| {
+            ["deploy", "kickstart", "restart"]
+                .iter()
+                .any(|w| r.contains(w))
+        }),
+    };
+    if done {
+        return None;
+    }
+    Some(match deploy {
+        Some(d) => format!("the answer says the change is live, but `{d}` never ran"),
+        None => "the answer says the change is live, but no deploy or restart command ran".into(),
+    })
 }
 
 /// The numbered lines under a plan's `## Tasks` heading, if it has one.
@@ -1809,6 +1859,18 @@ mod tests {
             finished |= matches!(evt, AgentEvent::Finished { .. });
         }
         assert!(finished, "the card was sent to the screen");
+    }
+
+    #[test]
+    fn a_live_claim_needs_the_deploy_to_have_run() {
+        let said = "The restart was successful - the new code should now be served via Tailscale.";
+        let ran = vec!["lsof -ti:8210".to_string()];
+        let warn = unproven_live(said, &ran, Some("npm run deploy")).unwrap();
+        assert!(warn.contains("`npm run deploy` never ran"), "{warn}");
+        assert!(unproven_live(said, &ran, None).is_some());
+        let deployed = vec!["cd ~/Code/cairn && npm run deploy".to_string()];
+        assert!(unproven_live(said, &deployed, Some("npm run deploy")).is_none());
+        assert!(unproven_live("Changed `src/a.ts:4`.", &ran, Some("npm run deploy")).is_none());
     }
 
     #[test]

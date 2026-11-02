@@ -1,9 +1,11 @@
 //! Running a shell command in the project, with a timeout and capped output.
 
 use std::process::Stdio;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use regex::Regex;
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 
@@ -62,6 +64,12 @@ impl Tool for Bash {
         }
         if let Some(bad) = forbidden(command) {
             return Err(ToolError::Refused(format!("`{bad}` is not allowed here")));
+        }
+        if let Some(why) = left_running(command) {
+            return Err(ToolError::Refused(format!(
+                "{why}. {}",
+                live_hint(ctx.project.deploy.as_deref())
+            )));
         }
         let timeout = arg_u64(args, "timeout_s")?
             .unwrap_or(DEFAULT_TIMEOUT_S)
@@ -147,6 +155,53 @@ fn forbidden(command: &str) -> Option<&'static str> {
     FORBIDDEN.iter().copied().find(|bad| command.contains(bad))
 }
 
+/// Stopping a process by its number, or starting one that outlives the
+/// command. Both have left a service down here: a killed PID was launchd's,
+/// which then could not get its port back from the copy started with `&`.
+fn left_running(command: &str) -> Option<&'static str> {
+    static KILL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(^|[;&|(]|\bxargs(\s+-\S+)*)\s*kill\b").unwrap());
+    // A lone `&`: not `&&`, `2>&1` or `&>`.
+    static BACKGROUND: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(^|[^&>])&($|[^&>\d])").unwrap());
+    static DETACHED: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(^|[;&|(]\s*)(nohup|disown|setsid)\b").unwrap());
+    let bare = unquoted(command);
+    if KILL.is_match(&bare) {
+        Some("weft does not stop processes: the one on a port may be a service's, and stays down")
+    } else if BACKGROUND.is_match(&bare) || DETACHED.is_match(&bare) {
+        Some(
+            "weft does not leave processes running: one started here holds its port after the task",
+        )
+    } else {
+        None
+    }
+}
+
+/// What to do instead, for the refusal.
+fn live_hint(deploy: Option<&str>) -> String {
+    match deploy {
+        Some(d) => format!("To put changes live, run `{d}`."),
+        None => "To put changes live, say in your answer what the user should run.".into(),
+    }
+}
+
+/// The command with quoted text blanked, so a `&` in a string is not read
+/// as one in the shell.
+fn unquoted(command: &str) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut quote = None;
+    for c in command.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => out.push(' '),
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None => out.push(c),
+        }
+    }
+    out
+}
+
 /// The last lines, as `cap` keeps the first ones.
 fn tail(text: &str, max_lines: usize, max_bytes: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
@@ -219,6 +274,43 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::Refused(_)));
+    }
+
+    #[test]
+    fn processes_are_not_stopped_or_left_running() {
+        for bad in [
+            "kill 56905 56916 && sleep 2",
+            "lsof -ti:8210 | xargs kill -9",
+            "lsof -ti:8210 | xargs -r kill",
+            "cd app && npm run preview &",
+            "npm run preview & sleep 2; curl localhost:8210",
+            "nohup npm start",
+        ] {
+            assert!(left_running(bad).is_some(), "{bad}");
+        }
+        for fine in [
+            "npx vitest run 2>&1 | tail -n 50",
+            "npm run build &> build.log && npm test",
+            "grep -n 'a & b' src/x.ts",
+            "grep -rn skill src",
+            "echo \"kill it\"",
+        ] {
+            assert!(left_running(fine).is_none(), "{fine}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_refusal_names_the_deploy_command() {
+        let (_d, mut ctx) = ctx();
+        ctx.project = std::sync::Arc::new(crate::config::Project {
+            deploy: Some("npm run deploy".into()),
+            ..Default::default()
+        });
+        let err = Bash
+            .run(&json!({"command": "kill 123"}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("`npm run deploy`"), "{err}");
     }
 
     #[test]

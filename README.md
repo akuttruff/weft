@@ -270,6 +270,7 @@ run = "cargo fmt"           # run with sh -c, in the project root
 path = "~/Code/myapp"
 verify = "npx tsc --noEmit && npx vitest run"   # weft runs it after the worker; failures go back
 test = "npx vitest run --reporter=verbose {files}"  # runs the new tests without the change; guessed if left out
+deploy = "npm run deploy"   # how changes go live; the worker uses it, and "it's live" without it is flagged
 verify_timeout_s = 300
 notes = """
 - Commits are one line.
@@ -419,7 +420,10 @@ weft tool search '{"pattern":"fn main","glob":"*.rs"}'   # run one tool by hand
 
 Every path is resolved against the project root and refused outside it,
 symlinks included; the one exception is a picture `see_image` is given by its
-full path. `pkill`, `killall` and force pushes are never run.
+full path. `pkill`, `killall` and force pushes are never run, and neither is
+anything that stops a process (`kill`) or leaves one running (`&`, `nohup`):
+the server on a port is often a service, which stays down once killed. A
+project's `deploy` line is how its changes go live.
 
 ## The worker's tools
 
