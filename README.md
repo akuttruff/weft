@@ -272,6 +272,8 @@ verify = "npx tsc --noEmit && npx vitest run"   # weft runs it after the worker;
 test = "npx vitest run --reporter=verbose {files}"  # runs the new tests without the change; guessed if left out
 deploy = "npm run deploy"   # how changes go live; the worker uses it, and "it's live" without it is flagged
 serve = "npx vite --port {port} --strictPort"  # a dev server the worker may start to look at a change
+app = "http://127.0.0.1:8210"     # the running app, which `live` reads (GET only)
+database = ".data/app.sqlite"     # its SQLite file, which `live` queries read-only
 verify_timeout_s = 300
 notes = """
 - Commits are one line.
@@ -433,6 +435,13 @@ when the task ends. `look` saves a screenshot with headless Chrome for
 `see_image`; a phone width (under 500px, which headless Chrome won't lay out)
 is shot through a frame and cropped with `sips`. Set `CHROME` if Chrome is
 not in /Applications.
+
+When a project names its `app` or `database`, the planner, reviewer and
+worker get `live`: a GET from the running app (with `pick`, a JSON pointer,
+for one part of a large answer) or one SELECT on its database, opened
+read-only in sqlite's safe mode. The planner is told to check a reported bug
+against it before explaining it from the code, and to say so in the plan when
+the app already does what was asked.
 
 ## The worker's tools
 

@@ -8,6 +8,7 @@
 pub mod bash;
 pub mod files;
 pub mod image;
+pub mod live;
 pub mod memory;
 pub mod search;
 pub mod server;

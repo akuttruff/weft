@@ -57,6 +57,13 @@ pub struct Project {
     /// a free port weft picks: `npx vite --port {port} --strictPort`.
     #[serde(default)]
     pub serve: Option<String>,
+    /// The running app, for `live` to read from: `http://127.0.0.1:8210`.
+    #[serde(default)]
+    pub app: Option<String>,
+    /// The app's SQLite file, for `live` to query read-only; relative to the
+    /// project, or from `~/`.
+    #[serde(default)]
+    pub database: Option<String>,
     /// Seconds the checks may take before they count as failed.
     #[serde(default = "default_verify_timeout")]
     pub verify_timeout_s: u64,

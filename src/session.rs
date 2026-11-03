@@ -23,6 +23,7 @@ use crate::lm::chat::ChatModel;
 use crate::lm::raw::RawModel;
 use crate::mcp;
 use crate::models::Models;
+use crate::tools::live::Live;
 use crate::tools::memory;
 use crate::tools::server::Server;
 use crate::tools::todo::TodoWrite;
@@ -94,6 +95,14 @@ impl Session {
         registry.extend(vec![Box::new(TodoWrite), Box::new(Server)]);
         let mut planner_registry = Registry::read_only();
         planner_registry.extend(models.extra_tools(&root));
+        // The running app and its data, read-only, for a project that names them.
+        if config
+            .project_for(&root)
+            .is_some_and(|p| p.app.is_some() || p.database.is_some())
+        {
+            registry.extend(vec![Box::new(Live)]);
+            planner_registry.extend(vec![Box::new(Live)]);
+        }
         Self {
             planner: models.planner(),
             reviewer: models.reviewer(),
