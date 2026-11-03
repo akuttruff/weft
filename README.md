@@ -175,7 +175,10 @@ window. The review comes once at the end.
 **Every plan waits for your word.** Once the plan is on the screen, enter, or
 a typed "yes", lets the worker go; "no" or esc stops the task there; anything
 else you type is notes, and the planner writes the plan again with them in
-mind, up to three times. A line starting with `/` runs as a command (`/steps`,
+mind, up to three times. Your notes then travel with the task: the worker,
+the reviewer and the result card see them, and they outrank the task's first
+wording, so a change of mind ("no, the other way") is not reviewed back to
+the original. "continue" after a stall keeps them too. A line starting with `/` runs as a command (`/steps`,
 say) and the plan keeps waiting. A task given as `/go <task>` and the all-auto
 mode go straight on, as does `weft run` with no terminal to ask;
 `confirm = "never"` in the config goes straight on always.
