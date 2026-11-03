@@ -109,6 +109,9 @@ impl Tandem<'_> {
     ) -> Result<TandemOutcome, WorkerError> {
         let mut out = TandemOutcome::default();
         let began = std::time::Instant::now();
+        // The task as the person now means it: what they said on reading the
+        // plan goes with it to the worker, the reviewer and the session.
+        let mut meant = task.to_string();
         // The planner, the triage and the reviewer do not see the worker's
         // conversation, so "now add a test for that" needs the earlier exchange.
         let earlier = earlier(messages);
@@ -189,6 +192,7 @@ impl Tandem<'_> {
                             }
                             PlanDecision::Revise(notes) => {
                                 revisions += 1;
+                                meant = with_plan_notes(&meant, &notes);
                                 self.phase("planning").await;
                                 convo.push(Message::User(format!(
                                     "The user read the plan and says:\n{notes}\n\nRevise the plan to suit and write it out in full again, in the same shape."
@@ -244,7 +248,7 @@ impl Tandem<'_> {
         if let Some(command) = &self.ctx.project.deploy {
             lead.push_str(&prompts::deploy_note(command));
         }
-        messages.push(Message::User(task_message(&lead, task, plan.as_deref())));
+        messages.push(Message::User(task_message(&lead, &meant, plan.as_deref())));
         // A plan with a `## Tasks` section runs as rounds: the worker does
         // one, answers, and gets the next, so each starts with a fresh look
         // at the code and the window is trimmed between them.
@@ -319,7 +323,7 @@ impl Tandem<'_> {
             self.phase("reviewing").await;
             let diff = diff_of(&self.ctx.root, &out.touched).await;
             let brief = review_brief(
-                &with_earlier(task, Some(&context)),
+                &with_earlier(&meant, Some(&context)),
                 plan.as_deref(),
                 &out.answer,
                 checks.as_deref(),
@@ -441,7 +445,7 @@ impl Tandem<'_> {
             return Ok(out);
         }
         let mut report = report::build(
-            task,
+            &meant,
             out.plan.as_deref(),
             &out,
             &self.todos(),
@@ -934,6 +938,24 @@ pub fn earlier(messages: &[Message]) -> Option<String> {
         out.push_str(&format!("> {t}\n{}\n\n", clip(a, 1200)));
     }
     Some(out)
+}
+
+/// The task with the person's notes on its plan after it. Each note is one
+/// paragraph: the worker's conversation keeps a task to its first paragraph
+/// (`task_of`), and "continue" finds the task there.
+fn with_plan_notes(task: &str, notes: &str) -> String {
+    let notes: Vec<&str> = notes
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if notes.is_empty() {
+        return task.to_string();
+    }
+    format!(
+        "{task}\nAfter reading the plan, the person said (this outranks the wording above): {}",
+        notes.join(" / ")
+    )
 }
 
 /// The task, with the project note and the earlier exchange above it.
@@ -2382,6 +2404,78 @@ mod tests {
         async fn review_plan(&self, _plan: &str) -> PlanDecision {
             self.0.lock().unwrap().remove(0)
         }
+    }
+
+    #[tokio::test]
+    async fn notes_on_the_plan_reach_the_worker_and_the_reviewer() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        let ctx = Ctx::new(dir.path().to_path_buf());
+        let registry = Registry::builtin();
+        let planner = Scripted::new(
+            "planner",
+            vec![
+                Scripted::text(&shaped("1. move it to Train")),
+                Scripted::text(&shaped("1. move it to Habits")),
+            ],
+        );
+        let reviewer = Scripted::new(
+            "reviewer",
+            vec![Scripted::text("VERDICT: APPROVE\nNothing to add")],
+        );
+        let worker = Scripted::new(
+            "worker",
+            vec![
+                Scripted::calls(vec![edit("a.txt", "one", "two")]),
+                Scripted::text("Moved."),
+                // Asked again about the plan's steps; only the answers matter.
+                Scripted::text("Moved."),
+                Scripted::text("Moved."),
+                Scripted::text("Moved."),
+            ],
+        );
+        let (events, _rx) = mpsc::channel(256);
+        let approver = PlanScript(Mutex::new(vec![
+            PlanDecision::Revise("no, the other way:\n\ninto Nutrition, and call it Habits".into()),
+            PlanDecision::Go,
+        ]));
+        let mut tandem = Tandem {
+            planner: &planner,
+            reviewer: &reviewer,
+            worker: &worker,
+            worker_thinking: &worker,
+            registry: &registry,
+            planner_registry: &registry,
+            ctx: &ctx,
+            approver: &approver,
+            events,
+            cancel: CancellationToken::new(),
+            allowed: HashSet::new(),
+            when: PlanWhen::Auto,
+            review_rounds: 1,
+            confirm: Confirm::Asked,
+            lead: String::new(),
+            window: crate::config::DEFAULT_WINDOW,
+            digest: None,
+        };
+        let mut messages = vec![Message::System("sys".into())];
+        tandem
+            .run("move the tracker to Train", Mode::Plan, &mut messages)
+            .await
+            .unwrap();
+        let said = "no, the other way: / into Nutrition, and call it Habits";
+        let brief = reviewer.seen.lock().unwrap()[0].clone();
+        assert!(brief.contains(said), "{brief}");
+        let Message::User(first) = &messages[1] else {
+            panic!("{:?}", messages[1])
+        };
+        assert!(first.contains(said), "{first}");
+        // "continue" rebuilds the task from the conversation: the notes stay.
+        let (task, _) = &crate::agent::convo::exchanges(&messages)[0];
+        assert!(
+            task.starts_with("move the tracker to Train\n") && task.contains(said),
+            "{task}"
+        );
     }
 
     #[tokio::test]
