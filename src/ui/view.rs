@@ -1,8 +1,11 @@
 //! Turning transcript pieces into styled lines: tool calls, plans, reviews,
 //! and the answer text with a little markdown.
 
+use std::sync::LazyLock;
+
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use regex::Regex;
 use unicode_width::UnicodeWidthChar;
 
 use super::diff::{Kind, Row};
@@ -197,7 +200,26 @@ pub fn tool_line(summary: &str) -> Vec<Line<'static>> {
     ])]
 }
 
-/// `  ⎿ first line of the result (+n lines)`, or `Read 18 lines` for a file.
+/// The line a result is summed up by: its first, or for a failure the last
+/// line that names one (`Tests  1 failed | 631 passed`), so a run of checks
+/// that failed in its tests is not shown by the lint's "0 errors" before them.
+fn headline(ok: bool, output: &str) -> &str {
+    static FAILURE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b[1-9]\d*\s+(failed|failures?|errors?)\b|^\s*(FAIL|error)\b").unwrap()
+    });
+    let first = output.lines().next().unwrap_or("(no output)");
+    if ok {
+        return first;
+    }
+    output
+        .lines()
+        .rev()
+        .find(|l| FAILURE.is_match(l))
+        .map(str::trim)
+        .unwrap_or(first)
+}
+
+/// `  ⎿ the result's headline (+n lines)`, or `Read 18 lines` for a file.
 pub fn result_line(ok: bool, output: &str, tool: &str) -> Vec<Line<'static>> {
     let n = output.lines().count();
     let summary = if ok && tool == "read_file" {
@@ -212,10 +234,7 @@ pub fn result_line(ok: bool, output: &str, tool: &str) -> Vec<Line<'static>> {
             if numbered == 1 { "" } else { "s" }
         )
     } else {
-        let first: String = output
-            .lines()
-            .next()
-            .unwrap_or("(no output)")
+        let first: String = headline(ok, output)
             .replace('\t', "  ")
             .chars()
             .take(110)
@@ -921,6 +940,21 @@ mod tests {
             "read_file",
         );
         assert_eq!(l[0].spans[1].content, "Read 2 lines");
+    }
+
+    #[test]
+    fn a_failure_is_summed_up_by_the_line_that_names_it() {
+        let checks = "Found 0 warnings and 0 errors.\n FAIL  src/a.test.tsx > month\n Test Files  1 failed | 21 passed (22)\n      Tests  1 failed | 631 passed (632)\n   Duration  9s";
+        let l = result_line(false, checks, "checks");
+        assert_eq!(
+            l[0].spans[1].content,
+            "Tests  1 failed | 631 passed (632) (+4 lines)"
+        );
+        // Passing, or a failure that names nothing: the first line, as before.
+        let l = result_line(true, checks, "checks");
+        assert!(l[0].spans[1].content.starts_with("Found 0 warnings"));
+        let l = result_line(false, "exit 2\nno match", "bash");
+        assert_eq!(l[0].spans[1].content, "exit 2 (+1 lines)");
     }
 
     #[test]
