@@ -401,7 +401,7 @@ command = ["weft-web", "--config", "{config}", "resume", "{id}"]
 ```
 
 With that, `/handoff` moves a session onto the phone:
-weft-web, a separate project, runs
+[weft-web](https://github.com/akuttruff/weft-web), a separate project, runs
 weft sessions in pseudo-terminals on the Mac, which a browser on the tailnet
 and any terminal can join at once. The terminal you typed `/handoff` in becomes
 one of them, and ctrl-] leaves the session running. Run inside a weft-web
