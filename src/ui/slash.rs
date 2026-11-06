@@ -40,6 +40,7 @@ impl App {
                     self.quit = true;
                 }
             }
+            "/handoff" => self.hand_off(tx),
             "/think" => {
                 self.think = !self.think;
                 self.push(view::note_line(&format!(
@@ -251,6 +252,28 @@ impl App {
     }
 
     /// Fold the conversation now, on its own tokio task like a task.
+    /// `/handoff`: compact, then leave so `[handoff] command` takes the
+    /// session over. The compaction is saved in the session file, so the
+    /// command resumes the folded conversation; if it fails or esc stops
+    /// it, weft stays.
+    fn hand_off(&mut self, tx: &mpsc::Sender<UiMsg>) {
+        if !self.can_handoff {
+            self.push(view::note_line(
+                "no [handoff] command in the config; see weft's README",
+            ));
+        } else if self.running.is_some() {
+            self.push(view::note_line("a task is running; esc stops it"));
+        } else if self.session.transcript_id().is_none() {
+            self.push(view::note_line("nothing to hand off yet"));
+        } else if self.session.depth() == 0 {
+            self.handoff = true;
+            self.quit = true;
+        } else {
+            self.handing_off = true;
+            self.compact(tx);
+        }
+    }
+
     pub(super) fn compact(&mut self, tx: &mpsc::Sender<UiMsg>) {
         if self.running.is_some() {
             self.push(view::note_line("a task is running; esc stops it"));

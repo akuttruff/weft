@@ -163,11 +163,15 @@ async fn main() -> Result<()> {
                 }
             };
             let session = Arc::new(session);
-            let exit = weft::ui::run(session.clone(), args.yes, think, resume).await?;
+            let handoff = !config.handoff.command.is_empty();
+            let exit = weft::ui::run(session.clone(), args.yes, think, resume, handoff).await?;
             session.finish();
             match (exit, session.transcript_id()) {
                 (weft::ui::Exit::Restart, Some(id)) => restart_into(&config_file, &id, args.yes),
                 (weft::ui::Exit::Restart, None) => restart_into(&config_file, "", args.yes),
+                (weft::ui::Exit::Handoff, Some(id)) => {
+                    hand_off(&config.handoff, &config_file, &id, &session)
+                }
                 _ => {
                     say_how_to_resume(&session);
                     Ok(())
@@ -390,6 +394,28 @@ fn restart_into(config_file: &PathBuf, id: &str, yes: bool) -> Result<()> {
     // Rust: `exec` replaces this process; it only returns if it failed.
     let err = cmd.exec();
     Err(anyhow::anyhow!("could not restart weft: {err}"))
+}
+
+/// `/handoff`: this process becomes `[handoff] command`, which takes the
+/// saved (and just compacted) session over in the same terminal.
+fn hand_off(
+    handoff: &weft::config::Handoff,
+    config_file: &std::path::Path,
+    id: &str,
+    session: &Session,
+) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let Some(argv) = handoff.argv(id, config_file) else {
+        say_how_to_resume(session);
+        return Ok(());
+    };
+    // Rust: `exec` replaces this process; it only returns if it failed.
+    let err = std::process::Command::new(&argv[0]).args(&argv[1..]).exec();
+    say_how_to_resume(session);
+    Err(anyhow::anyhow!(
+        "could not hand off to `{}`: {err}",
+        argv.join(" ")
+    ))
 }
 
 /// After a session that did something: the line that picks it up again. A

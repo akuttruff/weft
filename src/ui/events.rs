@@ -20,10 +20,24 @@ impl App {
             UiMsg::Done(result) => self.on_done(result),
             UiMsg::Compacted(result) => {
                 self.running = None;
+                let handing_off = std::mem::take(&mut self.handing_off);
                 match result {
-                    Ok(done) => self.on_agent(done.event()),
-                    Err(WorkerError::Cancelled) => self.push(view::error_line("  ⎿ Interrupted")),
-                    Err(e) => self.push(view::error_line(&format!("  ⎿ could not compact: {e:#}"))),
+                    Ok(done) => {
+                        self.on_agent(done.event());
+                        if handing_off {
+                            self.handoff = true;
+                            self.quit = true;
+                        }
+                    }
+                    Err(e) => {
+                        self.push(view::error_line(&match e {
+                            WorkerError::Cancelled => "  ⎿ Interrupted".to_string(),
+                            e => format!("  ⎿ could not compact: {e:#}"),
+                        }));
+                        if handing_off {
+                            self.push(view::note_line("not handed off; still here"));
+                        }
+                    }
                 }
             }
             UiMsg::Agent(evt) => self.on_agent(evt),

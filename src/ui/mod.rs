@@ -95,6 +95,11 @@ const COMMANDS: &[(&str, &str, bool)] = &[
         "leave and come straight back to this session",
         false,
     ),
+    (
+        "/handoff",
+        "compact, then hand this session to [handoff] command",
+        false,
+    ),
     ("/quit", "leave", false),
 ];
 
@@ -229,6 +234,12 @@ struct App {
     quit: bool,
     /// Leaving in order to come straight back (`/restart`).
     restart: bool,
+    /// `[handoff] command` is set, so `/handoff` has somewhere to go.
+    can_handoff: bool,
+    /// `/handoff` is compacting first; it leaves once that is done.
+    handing_off: bool,
+    /// Leaving so that the handoff command takes the session over.
+    handoff: bool,
     frame: usize,
     /// Lines waiting to be pushed above the live area, each with the prefix
     /// its continuation lines take when wrapped.
@@ -273,12 +284,14 @@ struct App {
     laid_out: Option<(u16, u16)>,
 }
 
-/// How the screen was left: for good, or to be started again on the same
-/// session (`/restart`, which picks up a newly installed build).
+/// How the screen was left: for good, to be started again on the same
+/// session (`/restart`, which picks up a newly installed build), or for the
+/// session to be handed to `[handoff] command` (`/handoff`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Exit {
     Quit,
     Restart,
+    Handoff,
 }
 
 pub async fn run(
@@ -286,6 +299,7 @@ pub async fn run(
     yes: bool,
     think: bool,
     resume: Option<Saved>,
+    handoff: bool,
 ) -> Result<Exit> {
     // Rust: `try_init_with_options` returns a Result where `init_with_options`
     // would panic; a pipe or a terminal that does not answer gets a sentence
@@ -297,7 +311,7 @@ pub async fn run(
         anyhow::anyhow!("weft needs a terminal to draw in ({e}); try `weft run \"task\"` instead")
     })?;
     let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
-    let result = event_loop(&mut terminal, session, yes, think, resume).await;
+    let result = event_loop(&mut terminal, session, yes, think, resume, handoff).await;
     let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     result
@@ -309,8 +323,10 @@ async fn event_loop(
     yes: bool,
     think: bool,
     resume: Option<Saved>,
+    handoff: bool,
 ) -> Result<Exit> {
     let mut app = App::new(session, yes, think);
+    app.can_handoff = handoff;
     let (tx, mut rx) = mpsc::channel::<UiMsg>(512);
     let mut keys = EventStream::new();
     let mut tick = tokio::time::interval(TICK);
@@ -397,6 +413,8 @@ async fn event_loop(
     })?;
     Ok(if app.restart {
         Exit::Restart
+    } else if app.handoff {
+        Exit::Handoff
     } else {
         Exit::Quit
     })
@@ -422,6 +440,9 @@ impl App {
             quit_armed: false,
             quit: false,
             restart: false,
+            can_handoff: false,
+            handing_off: false,
+            handoff: false,
             frame: 0,
             out: Vec::new(),
             planner_usage: Usage::default(),

@@ -27,9 +27,41 @@ pub struct Config {
     pub hooks: Vec<Hook>,
     #[serde(default)]
     pub vision: Vision,
+    /// `/handoff`: the command this session becomes; see `Handoff`.
+    #[serde(default)]
+    pub handoff: Handoff,
     /// Settings for one folder: `[[project]]`, matched by `path`.
     #[serde(default, rename = "project")]
     pub projects: Vec<Project>,
+}
+
+/// `/handoff`: another program takes this session over, in the same
+/// terminal. weft compacts, saves and then becomes `command`, the way
+/// `/restart` becomes `weft resume <id>`. weft knows nothing of what the
+/// command is; `["weft-web", "resume", "{id}"]` puts the session on the phone.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Handoff {
+    /// The program and its arguments, run without a shell. `{id}` becomes
+    /// the session's id and `{config}` this config file's path.
+    #[serde(default)]
+    pub command: Vec<String>,
+}
+
+impl Handoff {
+    /// The command with its placeholders filled in; none when unset.
+    pub fn argv(&self, id: &str, config: &Path) -> Option<Vec<String>> {
+        if self.command.is_empty() {
+            return None;
+        }
+        let config = config.to_string_lossy();
+        Some(
+            self.command
+                .iter()
+                .map(|a| a.replace("{id}", id).replace("{config}", &config))
+                .collect(),
+        )
+    }
 }
 
 /// What weft knows about one project without anything in its repository.
@@ -256,6 +288,26 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handoff_fills_its_placeholders_and_is_off_by_default() {
+        let base = "[lm_studio]\n[planner]\nmodel = \"p\"\n[worker]\nmodel = \"w\"\n";
+        let config: Config = toml::from_str(base).unwrap();
+        assert!(config.handoff.argv("x", Path::new("/c")).is_none());
+
+        let text = format!(
+            "{base}[handoff]\ncommand = [\"weft-web\", \"--config\", \"{{config}}\", \"resume\", \"{{id}}\"]\n"
+        );
+        let config: Config = toml::from_str(&text).unwrap();
+        assert_eq!(
+            config
+                .handoff
+                .argv("20261104-1", Path::new("/c/w.toml"))
+                .unwrap(),
+            ["weft-web", "--config", "/c/w.toml", "resume", "20261104-1"]
+        );
+        assert!(toml::from_str::<Config>(&format!("{base}[handoff]\ncmd = []\n")).is_err());
+    }
 
     #[test]
     fn fills_defaults() {

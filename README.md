@@ -72,6 +72,7 @@ a word, and so on.
 | `/clear` | starts a fresh conversation |
 | `/resume` | lists this folder's earlier sessions; a number, or `/resume 2`, picks one up |
 | `/restart` | leaves and comes straight back to this session, on the installed build |
+| `/handoff` | compacts, then hands this session to `[handoff] command` in the same terminal |
 | `/think` | toggles the worker's thinking |
 | `/steps` | the worker's steps of the last plan, folded on the screen |
 | `/todos` | the worker's checklist; `/todos clear` empties it |
@@ -265,6 +266,9 @@ effort = "low"
 # tools = ["edit_file"]
 commands = ["cargo test", "cargo build", "git status", "git diff", "git log", "ls"]
 
+[handoff]                   # what /handoff becomes; run without a shell
+# command = ["weft-web", "--config", "{config}", "resume", "{id}"]
+
 [[hooks]]
 on = "after_edit"           # after_edit | before_bash | after_task
 run = "cargo fmt"           # run with sh -c, in the project root
@@ -381,6 +385,29 @@ the file is appended to from there. `/restart` leaves and comes straight back
 into the same session on the installed binary, which is how a new build is
 picked up without losing your place. Approvals given with `a`, the shift-tab
 mode and the undo history belong to the process and start afresh.
+
+**Handing a session off.** `/handoff` is `/restart` into another program.
+weft compacts the conversation, saves it, and in the same terminal becomes
+the command set in `[handoff]`, given the session's id. Nothing has to be
+copied, and the compaction is saved, so the program takes over the folded
+conversation. It waits for any running task to finish, and if the compaction
+fails or esc stops it, weft stays. Without a `[handoff]` section it says so
+and does nothing. weft knows nothing about the program; the command is run
+without a shell, with `{id}` and `{config}` filled in:
+
+```toml
+[handoff]
+command = ["weft-web", "--config", "{config}", "resume", "{id}"]
+```
+
+With that, `/handoff` moves a session onto the phone:
+weft-web, a separate project, runs
+weft sessions in pseudo-terminals on the Mac, which a browser on the tailnet
+and any terminal can join at once. The terminal you typed `/handoff` in becomes
+one of them, and ctrl-] leaves the session running. Run inside a weft-web
+session, `/handoff` just carries on in place, since the session is already
+there. Approvals, the shift-tab mode and the undo history start afresh, as
+with `/restart`.
 
 **Compaction.** After a task, once the worker's last prompt has reached
 `[compact] at`, the earlier tasks are folded into a handover note written by

@@ -404,3 +404,44 @@ fn a_long_task_says_when_it_is_done_and_a_short_one_does_not() {
         }]
     );
 }
+
+#[test]
+fn handoff_needs_a_command_and_a_session() {
+    let (mut app, tx, _rx) = app();
+    type_text(&mut app, &tx, "/handoff");
+    key(&mut app, &tx, KeyCode::Enter);
+    assert!(pending(&app).contains("no [handoff] command"));
+    assert!(!app.quit);
+
+    app.can_handoff = true;
+    type_text(&mut app, &tx, "/handoff");
+    key(&mut app, &tx, KeyCode::Enter);
+    assert!(pending(&app).contains("nothing to hand off yet"));
+    assert!(!app.quit && !app.handoff);
+}
+
+#[test]
+fn handoff_leaves_once_compacted_and_stays_if_compaction_stops() {
+    let (mut app, _tx, _rx) = app();
+    app.handing_off = true;
+    app.on_msg(UiMsg::Compacted(Err(WorkerError::Cancelled)));
+    assert!(pending(&app).contains("not handed off"));
+    assert!(!app.quit && !app.handoff && !app.handing_off);
+
+    app.handing_off = true;
+    app.on_msg(UiMsg::Compacted(Ok(Compacted {
+        before: 30_000,
+        after: 2_000,
+        tasks: 3,
+    })));
+    assert!(app.quit && app.handoff);
+
+    // A plain /compact never leaves.
+    let (mut plain, _tx, _rx) = self::app();
+    plain.on_msg(UiMsg::Compacted(Ok(Compacted {
+        before: 30_000,
+        after: 2_000,
+        tasks: 3,
+    })));
+    assert!(!plain.quit && !plain.handoff);
+}
