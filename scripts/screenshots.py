@@ -3,13 +3,16 @@
 
 Clones a demo repository, runs weft on the clone in a tmux window with a
 task, answers its questions the way a person would (enter on the plan, `a`
-on an edit), and renders two moments as terminal windows through headless
-Chrome:
+on an edit), and renders it as terminal windows through headless Chrome:
 
   approval.png  the plan, waiting for a word
-  weft.png      the whole task: plan, work, checks, review
+  weft.png      the whole task: plan, work, checks, review, result card
+  result.png    the screen the task ends on, with its result card
+  weft.gif      the run as it happened, sped up: a frame whenever the screen
+                changed, spinners and timers aside (needs gifski)
 
   scripts/screenshots.py [--repo ~/Code/barometer] [--out docs] [--work DIR]
+  scripts/screenshots.py --from DIR   # render again from a kept run's captures
 
 It needs tmux, git, the demo repository's node_modules (copied from it),
 Google Chrome, and LM Studio with weft's models loaded. A run takes as long
@@ -35,11 +38,16 @@ TASKS = [
     "/plan sort the monitor tiles so anything that's alerting or warning comes first in its group",
 ]
 CHECKS = "npx tsc --noEmit && npx oxlint && npx vitest run"
+# Demo data, so a look at the board in a browser has tiles in every state.
+SERVE = "BAROMETER_DEMO=1 npx vite --port {port} --strictPort"
 SESSION = "weft-shots"
 COLS, ROWS = 100, 52
 CHROME = os.environ.get("CHROME", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 # Each task may take this long, models included.
 TASK_TIMEOUT_S = 45 * 60
+# The GIF: at most this many frames, shown this many a second, and the
+# moments worth reading (the plan, the end) held this many frames longer.
+GIF_FRAMES, GIF_FPS, GIF_HOLD = 420, 8, 24
 
 ANSI = re.compile(r"\x1b\[([0-9;]*)m")
 PALETTE = {
@@ -69,8 +77,38 @@ def history() -> str:
     return tmux("capture-pane", "-p", "-e", "-S", "-", "-t", SESSION)
 
 
+# What changes on a screen that has not really changed: a spinner, a timer.
+NOISE = re.compile(r"[\u2800-\u28ff✻✶✳✢·⏳◐◓◑◒]|\d+(\.\d+)?\s?(ms|s|m)\b|\d+:\d\d")
+
+
+class Recorder:
+    """The visible screen each time it changes, for the GIF. A change of a
+    spinner or a timer alone is not a change."""
+
+    def __init__(self) -> None:
+        self.frames: list[str] = []
+        self.holds: set[int] = set()
+        self.last = ""
+
+    def snap(self, screen: str | None = None, hold: bool = False) -> None:
+        screen = screen if screen is not None else visible()
+        key = NOISE.sub("", plain(screen))
+        if key != self.last:
+            self.frames.append(screen)
+            self.last = key
+        if hold and self.frames:
+            self.holds.add(len(self.frames) - 1)
+
+
+REC = Recorder()
+
+
 def type_line(text: str) -> None:
-    tmux("send-keys", "-t", SESSION, "-l", text)
+    """Typed a few characters at a time, so the GIF shows it being typed."""
+    for i in range(0, len(text), 3):
+        tmux("send-keys", "-t", SESSION, "-l", text[i : i + 3])
+        time.sleep(0.04)
+        REC.snap()
     tmux("send-keys", "-t", SESSION, "Enter")
 
 
@@ -90,13 +128,15 @@ def run_task(task: str, on_plan) -> None:
     type_line(task)
     began, busy, answered = time.time(), False, set()
     while time.time() - began < TASK_TIMEOUT_S:
-        time.sleep(2)
+        time.sleep(1)
         screen = visible()
+        REC.snap(screen)
         live = bottom(screen)
         status = "\n".join(live[-8:])
         if "Follow this plan?" in status:
             if "plan" not in answered:
                 on_plan(screen)
+                REC.snap(screen, hold=True)
                 answered.add("plan")
                 print("  plan: go", flush=True)
             time.sleep(1)
@@ -115,6 +155,7 @@ def run_task(task: str, on_plan) -> None:
         elif busy:
             print(f"  done in {int(time.time() - began)}s", flush=True)
             time.sleep(2)
+            REC.snap(hold=True)
             return
     raise SystemExit(f"weft did not finish {task!r} within {TASK_TIMEOUT_S // 60} minutes")
 
@@ -205,17 +246,23 @@ def to_html(line: str, style: dict) -> str:
     return "".join(out) or " "
 
 
-def render(capture: str, out: Path, work: Path) -> None:
-    """A terminal window holding `capture`, as a PNG at twice the size."""
+def render(capture: str, out: Path, work: Path, scale: int = 2, rows: int | None = None) -> None:
+    """A terminal window holding `capture`, as a PNG at `scale` times the
+    size. With `rows`, every one is kept, blank or not, so frames of a GIF
+    all come out the same height."""
     lines = capture.rstrip("\n").splitlines()
-    while lines and not plain(lines[-1]).strip():
-        lines.pop()
+    if rows:
+        lines = (lines + [""] * rows)[:rows]
+    else:
+        while lines and not plain(lines[-1]).strip():
+            lines.pop()
     style = plain_style()
     body = "\n".join(to_html(l, style) for l in lines)
     font, line_h = 15, 22
     width = int(COLS * font * 0.6) + 48
     height = 38 + 20 + len(lines) * line_h + 24
     page = work / f"{out.stem}.html"
+    scale = str(scale)
     page.write_text(f"""<!doctype html><meta charset="utf-8">
 <style>
 html,body{{margin:0;background:{BG};}}
@@ -227,14 +274,55 @@ pre{{margin:0;padding:20px 24px 24px;color:{FG};font:{font}px/{line_h}px Menlo,"
 <div class="bar"><span class="dot" style="background:#ff5f57;margin-left:14px"></span><span class="dot" style="background:#febc2e"></span><span class="dot" style="background:#28c840"></span><span class="title">weft</span></div>
 <pre>{body}</pre>""")
     subprocess.run(
-        [CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=2",
+        [CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", f"--force-device-scale-factor={scale}",
          f"--window-size={width},{height}", f"--screenshot={out}", page.as_uri()],
         check=True, capture_output=True,
     )
-    print(f"  wrote {out}", flush=True)
+    if not rows:
+        print(f"  wrote {out}", flush=True)
+
+
+def gif(frames: list[str], holds: set[int], out: Path, work: Path) -> None:
+    """The frames as a GIF, at most GIF_FRAMES of them, evenly picked, with
+    the held ones (and the last) kept and shown longer."""
+    if not shutil.which("gifski"):
+        print("  no gifski, so no GIF", flush=True)
+        return
+    keep = set(range(0, len(frames), max(1, -(-len(frames) // GIF_FRAMES)))) | holds | {len(frames) - 1}
+    order = sorted(keep)
+    pngs = work / "frames"
+    shutil.rmtree(pngs, ignore_errors=True)
+    pngs.mkdir()
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(6) as pool:
+        list(pool.map(lambda i: render(frames[i], pngs / f"f{i:05}.png", pngs, scale=1, rows=ROWS), order))
+    seq: list[Path] = []
+    for i in order:
+        seq += [pngs / f"f{i:05}.png"] * (GIF_HOLD if i in holds or i == order[-1] else 1)
+    # gifski wants each file once; a held frame is copies of it.
+    names = []
+    for n, f in enumerate(seq):
+        link = pngs / f"s{n:05}.png"
+        os.link(f, link)
+        names.append(str(link))
+    sh("gifski", "--fps", str(GIF_FPS), "--quality", "80", "-o", str(out), *names)
+    print(f"  wrote {out} ({len(order)} frames, {out.stat().st_size // 1024} KB)", flush=True)
 
 
 # ---- The run -----------------------------------------------------------------
+
+
+def publish(work: Path, out: Path) -> None:
+    """The PNGs and the GIF from the captures a run left in `work`."""
+    caps = work / "captures"
+    for name in ("approval", "weft", "result"):
+        if (caps / f"{name}.ansi").exists():
+            render((caps / f"{name}.ansi").read_text(), out / f"{name}.png", work)
+    files = sorted(caps.glob("frame*.ansi"))
+    if files:
+        holds = {n for n, f in enumerate(files) if f.stem.endswith("-hold")}
+        gif([f.read_text() for f in files], holds, out / "weft.gif", work)
 
 
 def slug(path: Path) -> str:
@@ -248,13 +336,17 @@ def main() -> None:
     ap.add_argument("--work", help="a folder for the clone and the pages (default: a new temporary one)")
     ap.add_argument("--weft", default="weft", help="the weft to run")
     ap.add_argument("--keep", action="store_true", help="keep the clone and weft's session files for it")
+    ap.add_argument("--from", dest="again", help="a --work folder from an earlier run: render its captures again")
     args = ap.parse_args()
+    out = Path(args.out).expanduser().resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    if args.again:
+        publish(Path(args.again).expanduser().resolve(), out)
+        return
 
     repo = Path(args.repo).expanduser().resolve()
     work = Path(args.work).resolve() if args.work else Path(tempfile.mkdtemp(prefix="weft-shots-")).resolve()
     work.mkdir(parents=True, exist_ok=True)
-    out = Path(args.out).expanduser().resolve()
-    out.mkdir(parents=True, exist_ok=True)
     demo = work / repo.name
     if demo.exists():
         shutil.rmtree(demo)
@@ -266,7 +358,7 @@ def main() -> None:
 
     config = work / "config.toml"
     base = (Path.home() / ".config/weft/config.toml").read_text()
-    config.write_text(f'{base.rstrip()}\n\n[[project]]\npath = "{demo}"\nverify = "{CHECKS}"\n')
+    config.write_text(f'{base.rstrip()}\n\n[[project]]\npath = "{demo}"\nverify = "{CHECKS}"\nserve = "{SERVE}"\n')
 
     subprocess.run(["tmux", "kill-session", "-t", SESSION], capture_output=True)
     tmux("new-session", "-d", "-s", SESSION, "-x", str(COLS), "-y", str(ROWS), "-c", str(demo),
@@ -279,9 +371,15 @@ def main() -> None:
             print(f"task {n + 1}: {task}", flush=True)
             run_task(task, lambda screen, n=n: shots.setdefault("approval", screen) if n == 0 else None)
         shots["weft"] = history()
-        (work / "weft.ansi").write_text(shots["weft"])
+        shots["result"] = visible()
+        caps = work / "captures"
+        caps.mkdir(exist_ok=True)
         for name, capture in shots.items():
-            render(capture, out / f"{name}.png", work)
+            (caps / f"{name}.ansi").write_text(capture)
+        for n, frame in enumerate(REC.frames):
+            (caps / f"frame{n:05}{'-hold' if n in REC.holds else ''}.ansi").write_text(frame)
+        print(f"  captures kept in {caps}", flush=True)
+        publish(work, out)
     finally:
         subprocess.run(["tmux", "kill-session", "-t", SESSION], capture_output=True)
         if not args.keep:

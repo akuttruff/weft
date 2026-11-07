@@ -23,20 +23,28 @@ Weft draws an input box at the bottom of the terminal and writes the
 transcript above it, into the terminal's own scrollback, so it is still there
 when you leave. Here it is on a React + Node monitoring board, given "sort the
 monitor tiles so anything that's alerting or warning comes first in its
-group" (with `/plan`, so it plans whatever the task's size):
+group" (with `/plan`, so it plans whatever the task's size), five and a half
+minutes sped up:
 
-![a Weft session: a change, then a test for it](docs/weft.png)
+![Weft at work: the task typed, the plan approved, the edit, the tests, the checks, the review and the result card](docs/weft.gif)
 
 Each `⏺` line is a tool call with the first line of its result under it;
 looks asked for together run at once. An edit or a new file shows the code
 itself, removed lines in red and added lines in green, numbered as they sit
 in the file. The plan sits in a cyan gutter, and its steps and the tests its
 `Done when` asks for become the checklist, ticked off as the worker goes.
-When the worker is done, weft runs the project's checks itself, then the
+When the worker is done, weft runs the project's checks itself, runs the new
+test again with the change taken out (it should fail, and did), then the
 reviewer reads the diff, looking around the code with read-only tools. Here
 the worker's first checklist left out the plan's tests and was refused, so it
-put them back and wrote them before the reviewer approved. Edits, new files
-and shell commands ask first, and one key answers.
+put them back and wrote one before the reviewer approved. Edits, new files
+and shell commands ask first, and one key answers. The whole run, as one
+image: [docs/weft.png](docs/weft.png).
+
+The task ends with a result card: each `Done when` line with the test that
+covers it, and whether that test fails without the change:
+
+![Weft's result card: plan complete, each Done when line with its test, checks passed, review approved](docs/result.png)
 
 Every plan waits for your word. It opens with what will change for you, in
 the app's terms, and any choices to confirm; the worker's file-by-file steps
